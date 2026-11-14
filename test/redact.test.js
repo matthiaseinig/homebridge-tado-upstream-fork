@@ -102,10 +102,10 @@ test('URL-encoded JSON treats %22 and %27 as delimiters', () => {
   assert.doesNotMatch(redact('%27password%27%3A%27a%20TAILX%27'), /TAILX/);
 });
 
-test('unquoted values stop at ampersand, whitespace, comma or brace', () => {
+test('unquoted credentials run to the next ampersand, newline or key=, or the end', () => {
   assert.equal(redact('password=SECRETX&user=bob'), 'password=[redacted]&user=bob');
-  assert.equal(redact('password=SECRETX, user=bob'), 'password=[redacted], user=bob');
-  assert.equal(redact('{password: SECRETX}'), '{password: [redacted]}');
+  assert.equal(redact('password=SECRETX, user=bob'), 'password=[redacted] user=bob');
+  assert.doesNotMatch(redact('{password: SECRETX}'), /SECRETX/);
 });
 
 test('redact is idempotent', () => {
@@ -131,7 +131,7 @@ test('values starting with an encoded or plain quote in form and query strings a
   assert.doesNotMatch(redact('password=%22TAILXYZ%20abc&x=1'), /TAILXYZ/);
   assert.doesNotMatch(redact("password='TAILXYZ&x=1"), /TAILXYZ/);
   assert.doesNotMatch(redact('refresh_token=%27TAILXYZ%27abc&x=1'), /TAILXYZ|abc/);
-  assert.match(redact('refresh_token=%22TAILXYZ&x=1'), /&x=1$/);
+  assert.equal(redact('refresh_token=%22TAILXYZ&x=1'), 'refresh_token=%22[redacted]', 'unterminated quote fails closed');
 });
 
 test('raw authorization, bare token keys, util.inspect backticks and &quot; are covered', () => {
@@ -140,4 +140,35 @@ test('raw authorization, bare token keys, util.inspect backticks and &quot; are 
   assert.doesNotMatch(redact(util.inspect({ password: `it's "TAILXYZ0123"` })), /TAILXYZ/);
   assert.doesNotMatch(redact('password&quot;:&quot;TAILXYZ0123&quot;'), /TAILXYZ/);
   assert.equal(redact('Authorization: Bearer abcdef'), 'Authorization: Bearer [redacted]');
+});
+
+test('unterminated quoted secrets (truncated log lines) are masked to the end', () => {
+  for (const line of [
+    '{"password":"TAILXYZ and more, with comma',
+    "{'refresh_token': 'TAILXYZ and more",
+    String.raw`{\"password\":\"TAILXYZ and more`,
+    '%7B%22password%22%3A%22TAILXYZ%20and%20more',
+    'password: `TAILXYZ and more',
+    'password&quot;:&quot;TAILXYZ and more',
+  ]) {
+    const out = redact(line);
+    assert.doesNotMatch(out, /TAILXYZ|and more/, line);
+  }
+});
+
+test('unquoted passwords with spaces are masked to the next key, ampersand, newline or end', () => {
+  assert.equal(redact('password=hunter2 TAILXYZ'), 'password=[redacted]');
+  assert.equal(redact('password=hunter2 TAILXYZ\nnext line'), 'password=[redacted]\nnext line');
+  assert.equal(redact('password=hunter2 TAILXYZ user=bob'), 'password=[redacted] user=bob');
+  assert.equal(redact('secret: hunter2abc TAILXYZ&x=1'), 'secret: [redacted]&x=1');
+  assert.doesNotMatch(redact('token=abcdefghij klmnopqr'), /klmnopqr/);
+});
+
+test('session, sid and cookie headers are masked', () => {
+  assert.doesNotMatch(redact('set-cookie: session=TAILXYZ0123; Path=/; HttpOnly'), /TAILXYZ/);
+  assert.doesNotMatch(redact('Cookie: a=1; sid=TAILXYZ0123; b=2'), /TAILXYZ/);
+  assert.doesNotMatch(redact('session_id=TAILXYZ0123&x=1'), /TAILXYZ/);
+  assert.doesNotMatch(redact('{"sessionId":"TAILXYZ0123"}'), /TAILXYZ/);
+  assert.doesNotMatch(JSON.stringify(redact({ cookie: 'TAILXYZ0123', 'Set-Cookie': ['TAILXYZ0123'], sid: 'TAILXYZ0123', session: 'TAILXYZ0123' })), /TAILXYZ/);
+  assert.equal(redact('Set-Cookie: session=abc\nnext'), 'Set-Cookie: [redacted]\nnext');
 });

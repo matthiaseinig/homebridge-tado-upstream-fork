@@ -5,16 +5,19 @@
 // percent signs and escaped quotes inside a quoted secret cannot leak a tail.
 
 // Matched against the key lowercased with separators removed (accessToken, access_token, x-api-key).
-const SECRET_KEY = /(token|secret|password|apikey|authorization|devicecode|usercode)$/;
+const SECRET_KEY = /(token|secret|password|apikey|authorization|devicecode|usercode|setcookie|cookie|session|sessionid|sid)$/;
 const MASK = '[redacted]';
 
-const KEY = /(?:(?:access|refresh|id)[_-]?token|token|device[_-]?code|user[_-]?code|client[_-]?secret|secret|api[_-]?key|password|authorization)/gi;
+const KEY = /(?:(?:access|refresh|id)[_-]?token|token|device[_-]?code|user[_-]?code|client[_-]?secret|secret|api[_-]?key|password|authorization|set-cookie|cookie|session[_-]?id|session|sid)/gi;
 const JWT = /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)?/g;
 const AUTH_SCHEME = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
 const SCHEME_WORD = /^(?:Bearer|Basic|Digest)\b/i;
 
 const WS = /\s/;
-const UNQUOTED_END = /[&\s,}]/;
+const WORD_END = /[&\s,}]/;
+// An unquoted credential runs to the next "&", newline or "key=" (or the end of
+// the text). Values may contain spaces, so this over-masks rather than leaks.
+const CREDENTIAL_END = /&|[\r\n]|\s[A-Za-z_][\w.-]*=/;
 
 // Reads a quote token at i: a run of escapes ("\" or "%5C") followed by " or '
 // (plain or %22/%27), a backtick, or &quot;. k is the escape run length.
@@ -64,10 +67,15 @@ function findClose(text, from, q) {
   return null;
 }
 
-function unquotedEnd(text, from) {
+function wordEnd(text, from) {
   let i = from;
-  while (i < text.length && !UNQUOTED_END.test(text[i])) i += 1;
+  while (i < text.length && !WORD_END.test(text[i])) i += 1;
   return i;
+}
+
+function credentialEnd(text, from) {
+  const m = CREDENTIAL_END.exec(text.slice(from));
+  return m ? from + m.index : text.length;
 }
 
 function skipSpace(text, i) {
@@ -96,15 +104,21 @@ function redactSecrets(text) {
 
     const open = readQuote(text, i);
     let start = i;
-    let end = unquotedEnd(text, i);
+    let end = credentialEnd(text, i);
     let tail = end;
     if (open) {
       const found = findClose(text, i + open.len, open);
-      if (found) {
+      if (!found) {
+        // unterminated quote (truncated log line): fail closed, mask to the end
+        start = i + open.len;
+        tail = text.length;
+        end = text.length;
+      } else {
         // quoted: keep the delimiters, mask what is between them
         const qStart = i + open.len;
-        if (eq && end > found.end) {
-          start = i; // form/query style: unquoted reading is longer, mask all of it
+        const glued = found.end < text.length && !/[\s&,})\]]/.test(text[found.end]);
+        if (eq && glued) {
+          start = i; // form/query style: characters follow the closing quote directly, mask them too
           tail = end;
         } else {
           start = qStart;
@@ -115,7 +129,7 @@ function redactSecrets(text) {
     }
     // Plain words such as "refreshing token: HTTP 503" are not secrets: for the
     // bare words token and secret an unquoted value must look like a credential.
-    if (!open && /^(?:token|secret)$/i.test(m[0]) && end - start < 8) { KEY.lastIndex = m.index + 1; continue; }
+    if (!open && /^(?:token|secret)$/i.test(m[0]) && wordEnd(text, start) - start < 8) { KEY.lastIndex = m.index + 1; continue; }
     out += text.slice(last, start) + MASK;
     last = tail;
     KEY.lastIndex = Math.max(end, tail);

@@ -1,5 +1,10 @@
 # Changelog
 
+## v9.1.3 - 2026-11-14
+- Redaction fails closed: an unterminated quoted secret (truncated log line) is masked to the end of the text
+- Unquoted credentials are masked up to the next ampersand, newline or key= (or the end), so values containing spaces no longer leak a tail (this over-masks on purpose)
+- session, session id, sid, cookie and set-cookie are secret keys
+
 ## v9.1.2 - 2026-11-14
 - Redaction now scans structurally instead of with one regex: quoted, escaped, URL-encoded, single-quoted, backtick (util.inspect) and &quot; values are masked up to their real closing quote, including nested escaped JSON; values starting with a quote in form and query strings are masked; bare token, secret and authorization keys are covered; a fuzz test checks that no 6+ character secret survives
 - Backoff counts a cycle as failed when any call in it failed; a partial success no longer resets the failure count, only a fully successful cycle does
