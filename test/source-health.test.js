@@ -277,3 +277,53 @@ test('nextDelayMs never polls faster than the configured interval or the backoff
   h.recordFailure(httpError(503));
   assert.equal(h.nextDelayMs(60000), 120000);
 });
+
+test('a failing optional feature backs off on its own and never touches core health', () => {
+  let t = 0;
+  const h = new SourceHealth({ now: () => t, baseBackoffMs: 30000, maxBackoffMs: 600000 });
+  h.beginCycle();
+  h.recordSuccess();
+  h.endCycle();
+  for (let i = 0; i < 4; i++) {
+    h.beginCycle();
+    h.recordSuccess();
+    h.recordFeatureFailure('weather', httpError(503));
+    h.recordFeatureFailure('weather', httpError(503));
+    const change = h.endCycle();
+    assert.equal(change.changed, false);
+    assert.equal(h.snapshot().sourceStatus, 'ok');
+    assert.equal(h.backoffMs(), 0);
+    assert.equal(h.nextDelayMs(60000), 60000);
+  }
+  assert.equal(h.featureSnapshot().weather.stale, true);
+  assert.equal(h.featureSnapshot().weather.reason, 'offline');
+});
+
+test('feature backoff grows per failing cycle, blocks until due, and clears on success', () => {
+  let t = 1000;
+  const h = new SourceHealth({ now: () => t, baseBackoffMs: 30000, maxBackoffMs: 600000 });
+  assert.equal(h.featureReady('weather'), true);
+  h.beginCycle();
+  h.recordFeatureFailure('weather', httpError(503));
+  assert.equal(h.featureReady('weather'), false);
+  t += 29000;
+  assert.equal(h.featureReady('weather'), false);
+  t += 2000;
+  assert.equal(h.featureReady('weather'), true);
+  h.beginCycle();
+  h.recordFeatureFailure('weather', httpError(503));
+  t += 31000;
+  assert.equal(h.featureReady('weather'), false, 'second failing cycle waits 60 s');
+  t += 30000;
+  assert.equal(h.featureReady('weather'), true);
+  h.recordFeatureSuccess('weather');
+  assert.equal(h.featureSnapshot().weather.stale, false);
+  assert.equal(h.featureReady('other'), true, 'features are independent');
+});
+
+test('a 404 on an optional feature is not a failure', () => {
+  const h = new SourceHealth({ now: () => 5 });
+  h.recordFeatureFailure('weather', httpError(404));
+  assert.equal(h.featureReady('weather'), true);
+  assert.equal(h.featureSnapshot().weather?.stale ?? false, false);
+});

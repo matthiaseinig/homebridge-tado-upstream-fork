@@ -1,5 +1,14 @@
 # Changelog
 
+## v9.1.5 - 2026-11-15
+- The device login URL (user_code) is no longer masked in logs; device_code still is
+- Human-readable messages after "token:" or "session:" (for example "Response code 503") are kept; only credential-looking values (16+ characters, no spaces, base64url, hex or JWT characters) are masked; Bearer masking no longer swallows following fields such as expires_in
+- Failures of optional calls (weather, presence, presence lock, running time, child lock) no longer back off zone polling or mark the zones stale; each feature has its own backoff and stale flag, listed under features in tado-status-<home>.json
+- Optional features are updated independently, so one failing feature no longer blocks the others
+- Use Service.Battery instead of the BatteryService alias (Homebridge 2 readiness)
+- engines: homebridge ^1.8.0 || ^2.0.0, node ^22.12.0 || ^24 || ^26
+- Test for chained status writes
+
 ## v9.1.4 - 2026-11-14
 - Redaction: a quoted value followed directly by more characters (session="a&b";) is masked to the end of the credential, never to a point inside the quoted value; fuzz test for quoted values containing & space = , and ;
 

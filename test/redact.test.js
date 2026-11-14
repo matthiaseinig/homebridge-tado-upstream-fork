@@ -139,7 +139,7 @@ test('raw authorization, bare token keys, util.inspect backticks and &quot; are 
   assert.doesNotMatch(redact('{"token":"TAILXYZ0123"}'), /TAILXYZ/);
   assert.doesNotMatch(redact(util.inspect({ password: `it's "TAILXYZ0123"` })), /TAILXYZ/);
   assert.doesNotMatch(redact('password&quot;:&quot;TAILXYZ0123&quot;'), /TAILXYZ/);
-  assert.equal(redact('Authorization: Bearer abcdef'), 'Authorization: Bearer [redacted]');
+  assert.equal(redact('Authorization: Bearer abcdef0123'), 'Authorization: Bearer [redacted]');
 });
 
 test('unterminated quoted secrets (truncated log lines) are masked to the end', () => {
@@ -178,4 +178,32 @@ test('quoted values containing & or key= are masked to the closing quote and bey
   assert.doesNotMatch(redact("password='a b=TAILXYZ';"), /TAILXYZ/);
   assert.doesNotMatch(redact('sid="x y=TAILXYZ" ; z=1'), /TAILXYZ/);
   assert.doesNotMatch(redact('Cookie: a=1; session="q&r=TAILXYZ"; b=2'), /TAILXYZ/);
+});
+
+test('the device login URL with its user_code stays readable, device_code is still masked', () => {
+  const url = 'https://login.tado.com/oauth2/device?user_code=ABCD-1234';
+  assert.equal(redact(`Open the following URL: ${url}`), `Open the following URL: ${url}`);
+  assert.equal(redact('device_code=SECRETDEVICECODE123'), 'device_code=[redacted]');
+});
+
+test('human-readable error messages after "token:" are kept', () => {
+  const a = 'Error while refreshing token: Response code 503 (Service Unavailable)';
+  const b = 'API call failed. Could not get access token: getaddrinfo ENOTFOUND login.tado.com';
+  assert.equal(redact(a), a);
+  assert.equal(redact(b), b);
+  assert.equal(redact('session: expired, please sign in again'), 'session: expired, please sign in again');
+});
+
+test('credential-looking values after "token:" and "session:" are still masked', () => {
+  assert.equal(redact('token: 9f8e7d6c5b4a39281706aabbccdd'), 'token: [redacted]');
+  assert.equal(redact('session: abcdef0123456789ABCDEF_-.~'), 'session: [redacted]');
+  const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl';
+  assert.equal(redact(`token: ${jwt} (expired)`), 'token: [redacted] (expired)');
+  assert.equal(redact('token: 9f8e7d6c5b4a39281706aabbccdd, retry later'), 'token: [redacted], retry later');
+});
+
+test('Bearer masking stops at whitespace so following fields survive', () => {
+  assert.equal(redact('token_type=Bearer expires_in=3600'), 'token_type=Bearer expires_in=3600');
+  assert.equal(redact('Authorization: Bearer abcdef0123456789 expires_in=3600'), 'Authorization: Bearer [redacted] expires_in=3600');
+  assert.equal(redact('Bearer abcdef0123456789\nexpires_in: 3600'), 'Bearer [redacted]\nexpires_in: 3600');
 });

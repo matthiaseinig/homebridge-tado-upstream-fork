@@ -10,7 +10,9 @@ const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 const helpers = {};
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
-export default (api, accessories, config, tado, telegram) => {
+// deps (optional, for tests): { writeStatusFile }
+export default (api, accessories, config, tado, telegram, deps = {}) => {
+  const writeStatusFile = deps.writeStatusFile ?? writeFileAtomic;
   //init helper variables for current home scope
   if (!helpers[config.homeId]) {
     helpers[config.homeId] = {
@@ -765,7 +767,7 @@ export default (api, accessories, config, tado, telegram) => {
         zoneStates: helpers[config.homeId].lastZoneStates,
         staleZones: helpers[config.homeId].staleZones,
       });
-      await writeFileAtomic(
+      await writeStatusFile(
         join(helpers[config.homeId].storagePath, `tado-status-${config.homeId}.json`),
         JSON.stringify(snapshot, null, 2)
       );
@@ -832,6 +834,18 @@ export default (api, accessories, config, tado, telegram) => {
     void poll();
   }
 
+  async function optionalUpdate(feature, update) {
+    if (!tado.health.featureReady(feature)) {
+      Logger.debug(`Skipping ${feature}, backing off after failures.`, config.homeName);
+      return;
+    }
+    try {
+      await update();
+    } catch (error) {
+      Logger.error(`Failed to update ${feature}: ${error.message || JSON.stringify(error)}`);
+    }
+  }
+
   async function getStates() {
     try {
       //ME
@@ -843,20 +857,12 @@ export default (api, accessories, config, tado, telegram) => {
       //Zones
       if (config.zones.length) await updateZones();
 
-      //MobileDevices
-      if (config.presence.length) await updateMobileDevices();
-
-      //Weather
-      if (config.weather.temperatureSensor || config.weather.solarIntensity) await updateWeather();
-
-      //RunningTime
-      if (config.extras.centralSwitch && config.extras.runningInformation) await updateRunningTime();
-
-      //Presence Lock
-      if (config.extras.presenceLock) await updatePresence();
-
-      //Child Lock
-      if (config.childLock.length) await updateDevices();
+      //Optional features: each has its own backoff and a failure never blocks the others or the zones
+      if (config.presence.length) await optionalUpdate('presence', updateMobileDevices);
+      if (config.weather.temperatureSensor || config.weather.solarIntensity) await optionalUpdate('weather', updateWeather);
+      if (config.extras.centralSwitch && config.extras.runningInformation) await optionalUpdate('runningTime', updateRunningTime);
+      if (config.extras.presenceLock) await optionalUpdate('presenceLock', updatePresence);
+      if (config.childLock.length) await optionalUpdate('devices', updateDevices);
     } catch (error) {
       Logger.error(`Failed to get states: ${error.message || JSON.stringify(error)}`);
     } finally {
@@ -1069,7 +1075,7 @@ export default (api, accessories, config, tado, telegram) => {
               let serviceThermostat = acc.getService(api.hap.Service.Thermostat);
               let serviceHeaterCooler = acc.getService(api.hap.Service.HeaterCooler);
 
-              let serviceBattery = acc.getService(api.hap.Service.BatteryService);
+              let serviceBattery = acc.getService(api.hap.Service.Battery);
               let characteristicBattery = api.hap.Characteristic.BatteryLevel;
 
               if (serviceBattery && zone.battery) {
@@ -1304,7 +1310,7 @@ export default (api, accessories, config, tado, telegram) => {
       if (tempAccessory.length) {
         tempAccessory.forEach((acc) => {
           if (acc.displayName.includes(zone.name)) {
-            let serviceBattery = acc.getService(api.hap.Service.BatteryService);
+            let serviceBattery = acc.getService(api.hap.Service.Battery);
             let characteristicBattery = api.hap.Characteristic.BatteryLevel;
 
             if (serviceBattery && !isNaN(battery)) {
@@ -1326,7 +1332,7 @@ export default (api, accessories, config, tado, telegram) => {
 
       humidityAccessory.forEach((acc) => {
         if (acc.displayName.includes(zone.name)) {
-          let serviceBattery = acc.getService(api.hap.Service.BatteryService);
+          let serviceBattery = acc.getService(api.hap.Service.Battery);
           let characteristicBattery = api.hap.Characteristic.BatteryLevel;
 
           if (serviceBattery && !isNaN(battery)) {
@@ -1355,7 +1361,7 @@ export default (api, accessories, config, tado, telegram) => {
           if (acc.displayName.includes(zone.name)) {
             Logger.debug("Update window contact sensor.");
 
-            let serviceBattery = acc.getService(api.hap.Service.BatteryService);
+            let serviceBattery = acc.getService(api.hap.Service.Battery);
             let characteristicBattery = api.hap.Characteristic.BatteryLevel;
 
             if (serviceBattery && !isNaN(battery)) {

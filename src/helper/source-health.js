@@ -55,6 +55,65 @@ export class SourceHealth {
     this._cycle = 0;
     this._failureCycle = -1;
     this._reported = { status: 'pending', reason: null };
+    this._features = new Map();
+  }
+
+  // Optional features (weather, presence, running time, child lock) have their
+  // own failure count, backoff and stale flag; they never back off the core zone
+  // polling or mark the zones stale.
+  _feature(name) {
+    if (!this._features.has(name)) {
+      this._features.set(name, { lastSuccess: null, reason: null, failures: 0, failureCycle: -1, retryAfterMs: undefined, nextAt: 0 });
+    }
+    return this._features.get(name);
+  }
+
+  recordFeatureSuccess(name) {
+    const f = this._feature(name);
+    f.lastSuccess = this._now();
+    f.reason = null;
+    f.failures = 0;
+    f.retryAfterMs = undefined;
+    f.nextAt = 0;
+  }
+
+  recordFeatureFailure(name, error) {
+    const f = this._feature(name);
+    const kind = classifyError(error);
+    if (kind === 'client') return;
+    f.reason = kind;
+    if (f.failureCycle !== this._cycle) f.failures += 1;
+    f.failureCycle = this._cycle;
+    f.retryAfterMs = kind === 'rate_limited' ? retryAfterMs(error, this._now()) : undefined;
+    f.nextAt = this._now() + this._backoffFor(kind, f.failures, f.retryAfterMs);
+  }
+
+  // false while a failing optional feature is backing off
+  featureReady(name) {
+    return this._now() >= this._feature(name).nextAt;
+  }
+
+  featureSnapshot() {
+    const out = {};
+    for (const [name, f] of this._features) {
+      out[name] = {
+        stale: f.reason !== null,
+        reason: f.reason,
+        sourceTimestamp: f.lastSuccess === null ? null : new Date(f.lastSuccess).toISOString(),
+      };
+    }
+    return out;
+  }
+
+  _backoffFor(reason, failures, retryAfter) {
+    if (!failures) return 0;
+    if (retryAfter !== undefined) return capRetryAfter(retryAfter);
+    if (reason === 'auth_expired') return this._maxBackoffMs;
+    // One rejected access token is retried at the normal interval (the token
+    // was dropped, so the next poll refreshes it); backoff starts after that.
+    const n = reason === 'token_rejected' ? failures - 1 : failures;
+    if (n < 1) return 0;
+    return Math.min(this._maxBackoffMs, this._baseBackoffMs * 2 ** (n - 1));
   }
 
   // Call once at the start of every poll cycle. A cycle counts as failed when
@@ -125,14 +184,7 @@ export class SourceHealth {
   }
 
   backoffMs() {
-    if (!this._failures) return 0;
-    if (this._retryAfterMs !== undefined) return capRetryAfter(this._retryAfterMs);
-    if (this._reason === 'auth_expired') return this._maxBackoffMs;
-    // One rejected access token is retried at the normal interval (the token
-    // was dropped, so the next poll refreshes it); backoff starts after that.
-    const n = this._reason === 'token_rejected' ? this._failures - 1 : this._failures;
-    if (n < 1) return 0;
-    return Math.min(this._maxBackoffMs, this._baseBackoffMs * 2 ** (n - 1));
+    return this._backoffFor(this._reason, this._failures, this._retryAfterMs);
   }
 
   nextDelayMs(intervalMs) {

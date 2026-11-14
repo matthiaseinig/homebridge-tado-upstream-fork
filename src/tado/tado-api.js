@@ -336,18 +336,41 @@ export default class Tado {
     throw new Error(`Failed to load from external file after ${maxRetries} attempts.`);
   }
 
+  // Which part of the health picture a call belongs to: the core zone data
+  // (zones, zoneStates, me, home) drives backoff and staleness; other reads are
+  // optional features with their own backoff; writes do not affect health.
+  _callClass(path, method, tado_url_dif) {
+    if (method !== 'GET') return { kind: 'none' };
+    if (tado_url_dif) return { kind: 'feature', name: 'runningTime' };
+    if (/\/api\/v2\/me$/.test(path) || /\/api\/v2\/homes\/[^/]+$/.test(path) || /\/zoneStates$/.test(path) || /\/zones$/.test(path)) return { kind: 'core' };
+    if (/\/zones\/[^/]+\/state$/.test(path)) return { kind: 'none' }; // read inside a write
+    if (/\/weather$/.test(path)) return { kind: 'feature', name: 'weather' };
+    if (/\/mobileDevices/.test(path)) return { kind: 'feature', name: 'presence' };
+    if (/\/homes\/[^/]+\/state$/.test(path)) return { kind: 'feature', name: 'presenceLock' };
+    if (/\/devices(\/|$)/.test(path)) return { kind: 'feature', name: 'devices' };
+    return { kind: 'feature', name: 'other' };
+  }
+
   // Health changes are logged once per poll cycle (see the handler), not per call.
-  _recordHealth(error) {
+  _recordHealth(callClass, error) {
+    if (callClass.kind === 'none') return;
+    if (callClass.kind === 'feature') {
+      if (error) this.health.recordFeatureFailure(callClass.name, error);
+      else this.health.recordFeatureSuccess(callClass.name);
+      return;
+    }
     if (error) this.health.recordFailure(error);
     else this.health.recordSuccess();
   }
 
   async apiCall(path, method = 'GET', data = {}, params = {}, tado_url_dif) {
+    const callClass = this._callClass(path, method, tado_url_dif);
     let access_token;
     try {
       access_token = this.skipAuth ? undefined : await this.getToken();
     } catch (error) {
-      this._recordHealth(error);
+      // a missing token affects every call, so it counts against the core data
+      this._recordHealth({ kind: 'core' }, error);
       throw error;
     }
     const url = `${tado_url_dif || this.tadoApiUrl}${path}`;
@@ -386,7 +409,7 @@ export default class Tado {
     try {
       const response = await this._http(url, options);
       await this._increaseCounter();
-      this._recordHealth();
+      this._recordHealth(callClass);
       Logger.debug('API request success', {
         name: this.name,
         method,
@@ -396,7 +419,7 @@ export default class Tado {
       });
       return response.body;
     } catch (error) {
-      this._recordHealth(error);
+      this._recordHealth(callClass, error);
       // The server rejected our access token: drop it so the next call refreshes.
       if (error.response?.statusCode === 401 && this._tadoBearerToken) this._tadoBearerToken.timestamp = 0;
       Logger.error('API request failed', {

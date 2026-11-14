@@ -22,6 +22,7 @@ test('snapshot combines source status, zone flags and write state', () => {
       1: { boost: true, boostRemainingS: 1260, openWindow: false, openWindowRemainingS: null, write: null, stale: false },
       2: { boost: false, boostRemainingS: null, openWindow: true, openWindowRemainingS: 600, write: { status: 'accepted', acceptedAt: '2026-11-14T10:00:00.000Z', confirmedAt: null }, stale: false },
     },
+    features: {},
   });
 });
 
@@ -46,4 +47,15 @@ test('when the source is stale every zone entry is flagged stale', () => {
   health.recordFailure(Object.assign(new Error('x'), { code: 'ETIMEDOUT' }));
   const snap = buildStatusSnapshot({ health, writes: new WriteTracker(), zoneStates: { 1: fx.boost } });
   assert.equal(snap.zones['1'].stale, true);
+});
+
+test('snapshot lists per-feature stale flags', () => {
+  const health = new SourceHealth({ now: () => Date.parse('2026-11-14T10:00:00Z') });
+  health.recordFeatureSuccess('weather');
+  health.recordFeatureFailure('runningTime', Object.assign(new Error('x'), { code: 'ETIMEDOUT' }));
+  const snap = buildStatusSnapshot({ health, writes: new WriteTracker(), zoneStates: {} });
+  assert.deepEqual(snap.features, {
+    weather: { stale: false, reason: null, sourceTimestamp: '2026-11-14T10:00:00.000Z' },
+    runningTime: { stale: true, reason: 'offline', sourceTimestamp: null },
+  });
 });

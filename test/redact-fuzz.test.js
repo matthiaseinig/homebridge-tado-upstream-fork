@@ -19,7 +19,7 @@ function fuzz(startSeed, { quotesInSecrets }) {
   const TOK = AN + '-._~';
   const WILD = AN + ' ,%\'\\}&=:;/+#' + (quotesInSecrets ? '"' : '');
   const gen = (cs, min = 10, max = 40) => { const n = min + Math.floor(rnd() * (max - min)); let s = ''; for (let i = 0; i < n; i++) s += pick(cs); return s; };
-  const KEYS = ['access_token','accessToken','ACCESS-TOKEN','refresh_token','refreshToken','RefreshToken','id_token','idToken','device_code','deviceCode','user_code','userCode','client_secret','clientSecret','api_key','apiKey','api-key','password','Password','PASSWORD'];
+  const KEYS = ['access_token','accessToken','ACCESS-TOKEN','refresh_token','refreshToken','RefreshToken','id_token','idToken','device_code','deviceCode','client_secret','clientSecret','api_key','apiKey','api-key','password','Password','PASSWORD'];
   const b64u = (n) => gen(AN + '-_', n, n + 1);
   const formats = {
     json: (k, s) => JSON.stringify({ a: 1, [k]: s, b: 'x' }),

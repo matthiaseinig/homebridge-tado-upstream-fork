@@ -5,12 +5,18 @@
 // percent signs and escaped quotes inside a quoted secret cannot leak a tail.
 
 // Matched against the key lowercased with separators removed (accessToken, access_token, x-api-key).
-const SECRET_KEY = /(token|secret|password|apikey|authorization|devicecode|usercode|setcookie|cookie|session|sessionid|sid)$/;
+const SECRET_KEY = /(token|secret|password|apikey|authorization|devicecode|setcookie|cookie|session|sessionid|sid)$/;
 const MASK = '[redacted]';
 
-const KEY = /(?:(?:access|refresh|id)[_-]?token|token|device[_-]?code|user[_-]?code|client[_-]?secret|secret|api[_-]?key|password|authorization|set-cookie|cookie|session[_-]?id|session|sid)/gi;
+const KEY = /(?:(?:access|refresh|id)[_-]?token|token|device[_-]?code|client[_-]?secret|secret|api[_-]?key|password|authorization|set-cookie|cookie|session[_-]?id|session|sid)/gi;
 const JWT = /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)?/g;
-const AUTH_SCHEME = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
+// Bearer/Basic credentials on the same line; a following "key=value" (such as
+// expires_in=3600) is not part of the credential.
+const AUTH_SCHEME = /\b(Bearer|Basic)([ \t]+)([A-Za-z0-9._~+/=-]{8,})/gi;
+const KEY_VALUE_LIKE = /^[A-Za-z_][\w.-]*=[^=]/;
+// A bare "token:" or "session:" is only a credential when it looks like one;
+// error messages such as "refreshing token: Response code 503" stay readable.
+const CREDENTIAL_LIKE = /^[A-Za-z0-9_\-.~+/=]{16,}$/;
 const SCHEME_WORD = /^(?:Bearer|Basic|Digest)\b/i;
 
 const WS = /\s/;
@@ -132,6 +138,13 @@ function redactSecrets(text) {
     // Plain words such as "refreshing token: HTTP 503" are not secrets: for the
     // bare words token and secret an unquoted value must look like a credential.
     if (!open && /^(?:token|secret)$/i.test(m[0]) && wordEnd(text, start) - start < 8) { KEY.lastIndex = m.index + 1; continue; }
+    // bare token/session after a colon: mask only a credential-looking word
+    if (!open && !eq && /^(?:token|session)$/i.test(m[0])) {
+      const word = text.slice(start, wordEnd(text, start));
+      if (!CREDENTIAL_LIKE.test(word)) { KEY.lastIndex = m.index + 1; continue; }
+      tail = start + word.length;
+      end = tail;
+    }
     out += text.slice(last, start) + MASK;
     last = tail;
     KEY.lastIndex = Math.max(end, tail);
@@ -140,7 +153,8 @@ function redactSecrets(text) {
 }
 
 function redactString(text) {
-  return redactSecrets(text.replace(JWT, MASK).replace(AUTH_SCHEME, `$1 ${MASK}`));
+  const masked = text.replace(JWT, MASK).replace(AUTH_SCHEME, (all, scheme, space, value) => (KEY_VALUE_LIKE.test(value) ? all : `${scheme}${space}${MASK}`));
+  return redactSecrets(masked);
 }
 
 function isSecretKey(key) {

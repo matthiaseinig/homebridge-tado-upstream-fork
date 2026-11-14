@@ -62,7 +62,7 @@ const api = {
   },
 };
 
-async function build(homeId, zoneStatesResponse, zoneCount = 2, overrides = {}) {
+async function build(homeId, zoneStatesResponse, zoneCount = 2, overrides = {}, deps = {}) {
   const storage = await mkdtemp(join(tmpdir(), 'tado-harden-test-'));
   dirs.push(storage);
   const homeName = `Home${homeId}`;
@@ -78,8 +78,9 @@ async function build(homeId, zoneStatesResponse, zoneCount = 2, overrides = {}) 
     getZones: async () => config.zones.map((z) => ({ id: z.id, name: z.name, type: 'HEATING', devices: [], openWindowDetection: { enabled: true } })),
     getZoneStates: async () => zoneStatesResponse,
   };
-  const handler = DeviceHandler({ ...api, user: { storagePath: () => storage } }, [sw.accessory], config, tado, undefined);
-  return { handler, sw, tado, storage };
+  const accessories = [sw.accessory];
+  const handler = DeviceHandler({ ...api, user: { storagePath: () => storage } }, accessories, config, tado, undefined, deps);
+  return { handler, sw, tado, storage, accessories };
 }
 
 const centralWrites = (sw) => sw.writes.filter((w) => Array.isArray(w));
@@ -252,4 +253,55 @@ test('health changes are logged once per poll cycle, with no per-call flapping',
   } finally {
     Logger.init(quiet, false);
   }
+});
+
+test('status writes are chained: never concurrent, in order, each snapshot built after the previous write', async () => {
+  const events = [];
+  let active = 0;
+  let maxActive = 0;
+  const releases = [];
+  const writeStatusFile = (path, content) => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    const snapshot = JSON.parse(content);
+    events.push(`start:${snapshot.zones['1'].boost}`);
+    return new Promise((resolve) => {
+      releases.push(() => { active -= 1; events.push(`end:${snapshot.zones['1'].boost}`); resolve(); });
+    });
+  };
+  const response = { zoneStates: { 1: fx.auto, 2: fx.auto } };
+  const { handler } = await build(9020, response, 2, {}, { writeStatusFile });
+
+  await handler.getStates(); // first persist starts and is held open
+  await new Promise((r) => setTimeout(r, 20));
+  response.zoneStates = { 1: fx.boost, 2: fx.auto };
+  await handler.getStates(); // second persist must wait for the first
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(events, ['start:false'], 'second write has not started while the first is in flight');
+
+  releases.shift()();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(events, ['start:false', 'end:false', 'start:true'], 'second write starts only after the first ended, with the newer state');
+  releases.shift()();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(maxActive, 1);
+  assert.deepEqual(events, ['start:false', 'end:false', 'start:true', 'end:true']);
+});
+
+test('a failing optional feature is skipped while backing off and never blocks zones or other features', async () => {
+  const err = Object.assign(new Error('Response code 503'), { response: { statusCode: 503, headers: {} } });
+  const { handler, sw, tado, accessories } = await build(9021, { zoneStates: { 1: fx.auto, 2: fx.manual } }, 2, { weather: { temperatureSensor: true } });
+  accessories.push({ displayName: 'Home9021 Weather', context: { config: { homeName: 'Home9021' } } });
+  let calls = 0;
+  tado.getWeather = async () => { calls += 1; tado.health.recordFeatureFailure('weather', err); throw err; };
+  for (let i = 0; i < 3; i++) {
+    tado.health.beginCycle();
+    await handler.getStates();
+    tado.health.endCycle();
+  }
+  assert.equal(calls, 1, 'weather skipped while backing off');
+  assert.ok(centralWrites(sw).length >= 3, 'zones kept updating every cycle');
+  assert.equal(tado.health.snapshot().sourceStatus, 'pending');
+  assert.equal(tado.health.featureSnapshot().weather.stale, true);
+  assert.equal(tado.health.backoffMs(), 0);
 });

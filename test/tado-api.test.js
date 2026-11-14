@@ -224,3 +224,62 @@ test('failed presence lock write is not tracked', async () => {
   assert.equal(s.tado.writes.get('presence'), undefined);
   await s.done();
 });
+
+test('a persistently failing optional call does not back off or stale the core data', async () => {
+  let weatherDown = true;
+  const s = await setup((url) => {
+    if (url.endsWith('/oauth2/token')) return tokenOk;
+    if (url.endsWith('/weather')) { if (weatherDown) throw httpError(503); return {}; }
+    return { ok: true };
+  });
+  await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
+  for (let i = 0; i < 4; i++) {
+    s.tado.health.beginCycle();
+    await s.tado.getZones(1);
+    await s.tado.getZoneStates(1);
+    await assert.rejects(() => s.tado.getWeather(1));
+    s.tado.health.endCycle();
+  }
+  assert.equal(s.tado.health.snapshot().sourceStatus, 'ok');
+  assert.equal(s.tado.health.backoffMs(), 0);
+  assert.equal(s.tado.health.featureSnapshot().weather.stale, true);
+  assert.equal(s.tado.health.featureReady('weather'), false);
+  weatherDown = false;
+  s.clock.t += 11 * 60 * 1000;
+  s.tado.health.beginCycle();
+  await s.tado.getWeather(1);
+  assert.equal(s.tado.health.featureSnapshot().weather.stale, false);
+  await s.done();
+});
+
+test('core call failures still drive staleness and backoff', async () => {
+  const s = await setup((url) => {
+    if (url.endsWith('/oauth2/token')) return tokenOk;
+    if (url.endsWith('/zoneStates')) throw httpError(503);
+    return { ok: true };
+  });
+  await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
+  s.tado.health.beginCycle();
+  await s.tado.getZones(1);
+  await assert.rejects(() => s.tado.getZoneStates(1));
+  assert.equal(s.tado.health.snapshot().reason, 'offline');
+  assert.equal(s.tado.health.backoffMs(), 30000);
+  await s.done();
+});
+
+test('call classes: running time, presence, devices and weather are optional; writes do not affect health', async () => {
+  const s = await setup((url) => (url.endsWith('/oauth2/token') ? tokenOk : {}));
+  const c = (path, method = 'GET', minder) => s.tado._callClass(path, method, minder);
+  assert.deepEqual(c('/api/v2/homes/1/zoneStates'), { kind: 'core' });
+  assert.deepEqual(c('/api/v2/homes/1/zones'), { kind: 'core' });
+  assert.deepEqual(c('/api/v2/me'), { kind: 'core' });
+  assert.deepEqual(c('/api/v2/homes/1'), { kind: 'core' });
+  assert.deepEqual(c('/v1/homes/1/runningTimes', 'GET', 'https://minder.tado.com'), { kind: 'feature', name: 'runningTime' });
+  assert.deepEqual(c('/api/v2/homes/1/weather'), { kind: 'feature', name: 'weather' });
+  assert.deepEqual(c('/api/v2/homes/1/mobileDevices'), { kind: 'feature', name: 'presence' });
+  assert.deepEqual(c('/api/v2/homes/1/state'), { kind: 'feature', name: 'presenceLock' });
+  assert.deepEqual(c('/api/v2/homes/1/devices'), { kind: 'feature', name: 'devices' });
+  assert.deepEqual(c('/api/v2/homes/1/zones/3/state'), { kind: 'none' });
+  assert.deepEqual(c('/api/v2/homes/1/zones/3/overlay', 'PUT'), { kind: 'none' });
+  await s.done();
+});

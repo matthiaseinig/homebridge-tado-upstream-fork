@@ -13,5 +13,5 @@ export function buildStatusSnapshot({ health, writes, zoneStates, staleZones = [
   for (const [id, state] of Object.entries(zoneStates ?? {})) {
     zones[id] = { ...zoneFlags(state), write: written[id] ?? null, stale: stale || missing.has(id) };
   }
-  return { sourceStatus, sourceTimestamp, reason, zones };
+  return { sourceStatus, sourceTimestamp, reason, zones, features: health.featureSnapshot() };
 }
