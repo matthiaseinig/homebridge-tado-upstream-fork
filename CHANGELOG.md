@@ -1,5 +1,15 @@
 # Changelog
 
+## v9.1.1 - 2026-11-14
+- An empty or partial zone-states response no longer sets the Central Switch to Off: the last value is kept and the data is marked stale
+- Backoff counts failing poll cycles, not failing calls; one rejected access token (401) is retried at the normal interval; a 403 is not treated as an expired login
+- Retry-After is capped at 15 minutes
+- Boost is only reported for HEATING zones at 25 C with a timer overlay
+- Writes unconfirmed after the timeout even without a poll; switchAll, resumeShedule, open window, presence lock and child lock writes are tracked too
+- Redaction covers raw JWTs, camelCase token keys, escaped and URL-encoded JSON and single-quoted objects; the settings UI server logs through the redacting logger
+- The status file is written atomically
+- Tests run with a network block; package no longer ships tests or .claude/
+
 ## v9.1.0 - 2026-11-14
 - Cloud outage, rate limit or expired login now report stale data (with the last good timestamp) and keep the last known values instead of failing mid-update
 - A transient token refresh failure no longer drops the refresh token or starts a new device login; only a refusal from the token endpoint does

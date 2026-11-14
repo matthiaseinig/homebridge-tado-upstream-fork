@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyError, retryAfterMs, SourceHealth } from '../src/helper/source-health.js';
+import { classifyError, retryAfterMs, MAX_RETRY_AFTER_MS, SourceHealth } from '../src/helper/source-health.js';
 
 const httpError = (statusCode, headers = {}) => Object.assign(new Error(`HTTP ${statusCode}`), { response: { statusCode, headers } });
 
 test('classifyError maps HTTP and network failures', () => {
   assert.equal(classifyError(httpError(429)), 'rate_limited');
-  assert.equal(classifyError(httpError(401)), 'auth_expired');
-  assert.equal(classifyError(httpError(403)), 'auth_expired');
+  assert.equal(classifyError(httpError(401)), 'token_rejected');
+  assert.equal(classifyError(httpError(403)), 'forbidden');
   assert.equal(classifyError(httpError(503)), 'offline');
   assert.equal(classifyError(httpError(404)), 'client');
   assert.equal(classifyError(Object.assign(new Error('x'), { code: 'ENOTFOUND' })), 'offline');
@@ -103,24 +103,102 @@ test('recovery returns to ok and clears the reason', () => {
   const h = new SourceHealth({ now: () => 5 });
   h.recordSuccess();
   h.recordFailure(httpError(503));
+  h.beginCycle();
   const change = h.recordSuccess();
   assert.deepEqual([change.from, change.to], ['stale', 'ok']);
   assert.equal(h.snapshot().reason, null);
 });
 
-test('backoffMs grows exponentially, is capped, and honours Retry-After', () => {
+test('backoffMs grows exponentially per failing poll cycle, is capped, and honours Retry-After', () => {
   const h = new SourceHealth({ now: () => 5, baseBackoffMs: 30000, maxBackoffMs: 600000 });
   assert.equal(h.backoffMs(), 0);
+  h.beginCycle();
   h.recordFailure(httpError(503));
   assert.equal(h.backoffMs(), 30000);
+  h.beginCycle();
   h.recordFailure(httpError(503));
   assert.equal(h.backoffMs(), 60000);
-  for (let i = 0; i < 10; i++) h.recordFailure(httpError(503));
+  for (let i = 0; i < 10; i++) { h.beginCycle(); h.recordFailure(httpError(503)); }
   assert.equal(h.backoffMs(), 600000);
-  h.recordFailure(httpError(429, { 'retry-after': '900' }));
-  assert.equal(h.backoffMs(), 900000);
+  h.beginCycle();
+  h.recordFailure(httpError(429, { 'retry-after': '600' }));
+  assert.equal(h.backoffMs(), 600000);
+  h.beginCycle();
   h.recordSuccess();
   assert.equal(h.backoffMs(), 0);
+});
+
+test('several failed calls in one poll cycle count as one failure', () => {
+  const h = new SourceHealth({ now: () => 5, baseBackoffMs: 30000, maxBackoffMs: 600000 });
+  h.beginCycle();
+  for (let i = 0; i < 6; i++) h.recordFailure(httpError(503));
+  assert.equal(h.backoffMs(), 30000);
+  h.beginCycle();
+  h.recordFailure(httpError(503));
+  assert.equal(h.backoffMs(), 60000);
+});
+
+test('a success later in a failing cycle does not reset the backoff or the stale reason', () => {
+  const h = new SourceHealth({ now: () => 5, baseBackoffMs: 30000, maxBackoffMs: 600000 });
+  h.recordSuccess();
+  h.beginCycle();
+  h.recordFailure(httpError(503));
+  h.recordSuccess();
+  assert.equal(h.snapshot().sourceStatus, 'stale');
+  h.beginCycle();
+  h.recordFailure(httpError(503));
+  h.recordSuccess();
+  assert.equal(h.backoffMs(), 60000);
+  h.beginCycle();
+  h.recordSuccess();
+  assert.equal(h.snapshot().sourceStatus, 'ok');
+  assert.equal(h.backoffMs(), 0);
+});
+
+test('a single rejected access token (401) does not jump to the maximum backoff', () => {
+  const h = new SourceHealth({ now: () => 5, baseBackoffMs: 30000, maxBackoffMs: 600000 });
+  h.recordSuccess();
+  h.beginCycle();
+  h.recordFailure(httpError(401));
+  assert.equal(h.snapshot().reason, 'token_rejected');
+  assert.equal(h.backoffMs(), 0, 'retried at the normal interval after the token was dropped');
+  h.beginCycle();
+  h.recordFailure(httpError(401));
+  assert.equal(h.backoffMs(), 30000);
+});
+
+test('a 403 is a forbidden reason with normal exponential backoff, not an expired login', () => {
+  const h = new SourceHealth({ now: () => 5, baseBackoffMs: 30000, maxBackoffMs: 600000 });
+  h.beginCycle();
+  h.recordFailure(httpError(403));
+  assert.equal(h.snapshot().reason, 'forbidden');
+  assert.equal(h.backoffMs(), 30000);
+});
+
+test('Retry-After is capped at 15 minutes (seconds and dates)', () => {
+  assert.equal(MAX_RETRY_AFTER_MS, 900000);
+  assert.equal(retryAfterMs(httpError(429, { 'retry-after': '999999999' })), 900000);
+  const now = Date.parse('2026-11-14T10:00:00Z');
+  assert.equal(retryAfterMs(httpError(429, { 'retry-after': 'Sun, 14 Nov 2027 10:00:00 GMT' }), now), 900000);
+  const h = new SourceHealth({ now: () => 5 });
+  h.beginCycle();
+  h.recordFailure(httpError(429, { 'retry-after': '86400' }));
+  assert.equal(h.backoffMs(), 900000);
+  assert.ok(h.nextDelayMs(60000) < 2 ** 31 - 1);
+});
+
+test('markStale flags held data stale without adding backoff', () => {
+  const h = new SourceHealth({ now: () => 5 });
+  h.recordSuccess();
+  h.beginCycle();
+  h.markStale('incomplete');
+  h.recordSuccess();
+  assert.equal(h.snapshot().sourceStatus, 'stale');
+  assert.equal(h.snapshot().reason, 'incomplete');
+  assert.equal(h.backoffMs(), 0);
+  h.beginCycle();
+  h.recordSuccess();
+  assert.equal(h.snapshot().sourceStatus, 'ok');
 });
 
 test('auth_expired backs off to the cap so polling does not hammer the login endpoint', () => {
@@ -132,9 +210,12 @@ test('auth_expired backs off to the cap so polling does not hammer the login end
 test('nextDelayMs never polls faster than the configured interval or the backoff', () => {
   const h = new SourceHealth({ now: () => 5, baseBackoffMs: 30000, maxBackoffMs: 600000 });
   assert.equal(h.nextDelayMs(60000), 60000);
+  h.beginCycle();
   h.recordFailure(httpError(503));
   assert.equal(h.nextDelayMs(60000), 60000);
+  h.beginCycle();
   h.recordFailure(httpError(503));
+  h.beginCycle();
   h.recordFailure(httpError(503));
   assert.equal(h.nextDelayMs(60000), 120000);
 });

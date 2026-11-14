@@ -40,3 +40,40 @@ test('Logger never emits a token', () => {
   assert.equal(lines.length, 3);
   for (const l of lines) assert.doesNotMatch(l, /SECRET/);
 });
+
+const JWT = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl';
+
+test('redact masks raw JWTs anywhere', () => {
+  assert.doesNotMatch(redact(`failed with ${JWT} in message`), /eyJ/);
+  assert.doesNotMatch(JSON.stringify(redact({ note: `x ${JWT}`, list: [JWT] })), /eyJ/);
+});
+
+test('redact masks camelCase and dashed token keys in objects', () => {
+  const out = redact({ accessToken: 'a', refreshToken: 'b', deviceCode: 'c', 'x-api-key': 'd', idToken: 'e', clientSecret: 'f', fine: 'ok' });
+  assert.deepEqual(Object.values(out).filter((v) => v !== 'ok'), Array(6).fill('[redacted]'));
+  assert.equal(out.fine, 'ok');
+});
+
+test('redact masks escaped, URL-encoded, spaced and single-quoted forms', () => {
+  const cases = [
+    String.raw`{\"refresh_token\":\"SECRETX\"}`,
+    '%7B%22refresh_token%22%3A%22SECRETX%22%7D',
+    'refresh_token%3DSECRETX',
+    'refresh_token = SECRETX',
+    "{ 'refresh_token': 'SECRETX' }",
+    '"accessToken":"SECRETX"',
+    'client_secret=SECRETX&x=1',
+  ];
+  for (const c of cases) assert.doesNotMatch(redact(c), /SECRETX/, c);
+});
+
+test('redact masks Basic credentials and keeps normal text', () => {
+  assert.equal(redact('Authorization: Basic dXNlcjpwYXNz'), 'Authorization: Basic [redacted]');
+  assert.equal(redact('Polling Zones for Home'), 'Polling Zones for Home');
+});
+
+test('redact masks secrets inside Error messages and stacks', () => {
+  const e = new Error(`bad refresh_token=SECRETX ${JWT}`);
+  const out = redact(e);
+  assert.doesNotMatch(out.message + out.stack, /SECRETX|eyJ/);
+});

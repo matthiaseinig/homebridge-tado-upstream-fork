@@ -4,9 +4,12 @@ import { writeFile } from 'fs/promises';
 import { join } from "path";
 import { randomUUID } from 'crypto';
 import { buildStatusSnapshot } from './status-snapshot.js';
+import { writeFileAtomic } from './atomic-write.js';
+import { zoneFlags } from './zone-flags.js';
 
 const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 const helpers = {};
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 export default (api, accessories, config, tado, telegram) => {
   //init helper variables for current home scope
@@ -750,15 +753,15 @@ export default (api, accessories, config, tado, telegram) => {
 
   async function persistStatus() {
     try {
+      for (const t of tado.writes.sweep()) Logger.warn(`Write ${t.key} ${t.to}.`, config.homeName);
       const snapshot = buildStatusSnapshot({
         health: tado.health,
         writes: tado.writes,
         zoneStates: helpers[config.homeId].lastZoneStates,
       });
-      await writeFile(
+      await writeFileAtomic(
         join(helpers[config.homeId].storagePath, `tado-status-${config.homeId}.json`),
-        JSON.stringify(snapshot, null, 2),
-        "utf-8"
+        JSON.stringify(snapshot, null, 2)
       );
     } catch (error) {
       Logger.error(`Error while updating the tado status file for home ${config.homeId}: ${error.message || JSON.stringify(error)}`);
@@ -804,12 +807,13 @@ export default (api, accessories, config, tado, telegram) => {
     if (helpers[config.homeId].tasksInitialized) return;
     helpers[config.homeId].tasksInitialized = true;
     async function poll() {
+      tado.health.beginCycle();
       try {
         await getStates();
       } finally {
         const interval = _getPollingInterval();
         helpers[config.homeId].nextPollingTime = Date.now() + interval;
-        setTimeout(poll, interval);
+        setTimeout(poll, Math.min(interval, MAX_TIMER_MS));
       }
     }
     void poll();
@@ -970,6 +974,7 @@ export default (api, accessories, config, tado, telegram) => {
     }
     helpers[config.homeId].lastZoneStates = zoneStates;
 
+    let zoneStatesIncomplete = !Object.keys(zoneStates).length;
     for (const zone of config.zones) {
       const zoneState = zoneStates[zone.id.toString()];
       Logger.debug(`Update state of zone ${zone.id} to:`, zoneState);
@@ -977,11 +982,15 @@ export default (api, accessories, config, tado, telegram) => {
       //keep the last known values instead of failing half way through the zones
       if (!zoneState || !zoneState.setting) {
         Logger.warn(`No state returned for zone ${zone.id}, keeping the last known values.`, config.homeName);
+        zoneStatesIncomplete = true;
         continue;
       }
 
       for (const t of tado.writes.observe(zone.id, zoneState)) {
         Logger.info(`Write to zone ${zone.id} ${t.to}.`, config.homeName);
+      }
+      for (const t of tado.writes.observe(`openWindow:${zone.id}`, zoneFlags(zoneState).openWindow)) {
+        Logger.info(`Open window write for zone ${zone.id} ${t.to}.`, config.homeName);
       }
 
       let currentState, targetState, currentTemp, targetTemp, humidity, active, battery, tempEqual;
@@ -1375,7 +1384,11 @@ export default (api, accessories, config, tado, telegram) => {
       (acc) => acc && acc.displayName === acc.context.config.homeName + ' Central Switch'
     );
 
-    if (centralSwitchAccessory.length) {
+    //counts from missing zones would be wrong (all zero reads as Off): keep the last value
+    if (zoneStatesIncomplete) {
+      tado.health.markStale('incomplete');
+      Logger.warn('Zone states are incomplete, keeping the last known central switch state.', config.homeName);
+    } else if (centralSwitchAccessory.length) {
       centralSwitchAccessory[0].services.forEach((service) => {
         if (service.subtype === 'Central') {
           let serviceSwitch = centralSwitchAccessory[0].getServiceById(api.hap.Service.Switch, service.subtype);
@@ -1527,6 +1540,10 @@ export default (api, accessories, config, tado, telegram) => {
 
       let state = presenceLock.presenceLocked ? (presenceLock.presence === 'AWAY' ? 1 : 0) : 3;
 
+      for (const t of tado.writes.observe('presence', presenceLock.presenceLocked ? presenceLock.presence : 'AUTO')) {
+        Logger.info(`Presence lock write ${t.to}.`, config.homeName);
+      }
+
       let serviceSecurity = presenceLockAccessory[0].getService(api.hap.Service.SecuritySystem);
       let serviceHomeSwitch = presenceLockAccessory[0].getServiceById(api.hap.Service.Switch, 'HomeSwitch');
       let serviceAwaySwitch = presenceLockAccessory[0].getServiceById(api.hap.Service.Switch, 'AwaySwitch');
@@ -1615,6 +1632,10 @@ export default (api, accessories, config, tado, telegram) => {
           let characteristic = api.hap.Characteristic.On;
 
           let childLockEnabled = device.childLockEnabled || false;
+
+          for (const t of tado.writes.observe(`childLock:${device.serialNo}`, childLockEnabled)) {
+            Logger.info(`Child lock write ${t.to}.`, config.homeName);
+          }
 
           serviceChildLock.getCharacteristic(characteristic).updateValue(childLockEnabled);
         }

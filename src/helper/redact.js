@@ -1,13 +1,26 @@
 // Keeps credentials out of logs. Never mutates its input.
 
-const SECRET_KEYS = /^(access_token|refresh_token|device_code|id_token|authorization|password|client_secret|token)$/i;
+// Matched against the key lowercased with separators removed (accessToken, access_token, x-api-key).
+const SECRET_KEY = /(token|secret|password|apikey|authorization|devicecode|usercode)$/;
 const MASK = '[redacted]';
+
+const KEY = '(?:(?:access|refresh|id)[_-]?token|device[_-]?code|user[_-]?code|client[_-]?secret|api[_-]?key|password)';
+// quote forms: plain, single, escaped (\"), URL-encoded (%22 / %27)
+const QUOTE = `(?:\\\\*["']|%22|%27)`;
+const SEP = `${QUOTE}?\\s*(?:[:=]|%3A|%3D)\\s*${QUOTE}?`;
+const KEY_VALUE = new RegExp(`(${KEY})(${SEP})([^"'\\\\&\\s,}%]+)`, 'gi');
+const JWT = /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)?/g;
+const AUTH_SCHEME = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
 
 function redactString(text) {
   return text
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, `Bearer ${MASK}`)
-    .replace(/((?:access_token|refresh_token|device_code|id_token|client_secret|password)=)[^&\s"']+/gi, `$1${MASK}`)
-    .replace(/("(?:access_token|refresh_token|device_code|id_token|client_secret|password)"\s*:\s*")[^"]*(")/gi, `$1${MASK}$2`);
+    .replace(JWT, MASK)
+    .replace(AUTH_SCHEME, `$1 ${MASK}`)
+    .replace(KEY_VALUE, `$1$2${MASK}`);
+}
+
+function isSecretKey(key) {
+  return SECRET_KEY.test(key.toLowerCase().replace(/[^a-z]/g, ''));
 }
 
 export function redact(value, seen = new WeakSet()) {
@@ -24,7 +37,7 @@ export function redact(value, seen = new WeakSet()) {
   }
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    out[k] = SECRET_KEYS.test(k) ? MASK : redact(v, seen);
+    out[k] = isSecretKey(k) ? MASK : redact(v, seen);
   }
   return out;
 }

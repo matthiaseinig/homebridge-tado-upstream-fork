@@ -11,12 +11,22 @@ export function classifyError(error, depth = 0) {
   const status = error.response?.statusCode;
   if (error.code === 'TADO_AUTH_REQUIRED') return 'auth_expired';
   if (status === 429) return 'rate_limited';
-  if (status === 401 || status === 403) return 'auth_expired';
+  // The server rejected the access token; a refresh may fix it, so this is not
+  // an expired login. A 403 is a permission problem, not an expired login.
+  if (status === 401) return 'token_rejected';
+  if (status === 403) return 'forbidden';
   if (status >= 500) return 'offline';
   if (status >= 400) return 'client';
   if (NETWORK_CODES.has(error.code) || error.name === 'TimeoutError') return 'offline';
   if (error.cause) return classifyError(error.cause, depth + 1);
   return 'error';
+}
+
+// Longest Retry-After we honour; also keeps setTimeout far from its 2^31 limit.
+export const MAX_RETRY_AFTER_MS = 15 * 60 * 1000;
+
+function capRetryAfter(ms) {
+  return Math.min(ms, MAX_RETRY_AFTER_MS);
 }
 
 export function retryAfterMs(error, now = Date.now(), depth = 0) {
@@ -25,11 +35,11 @@ export function retryAfterMs(error, now = Date.now(), depth = 0) {
     return error?.cause && depth < 5 ? retryAfterMs(error.cause, now, depth + 1) : undefined;
   }
   const text = String(raw).trim();
-  if (/^\d+$/.test(text)) return Number(text) * 1000;
+  if (/^\d+$/.test(text)) return capRetryAfter(Number(text) * 1000);
   const at = Date.parse(text);
   if (Number.isNaN(at)) return undefined;
   const delta = at - now;
-  return delta > 0 ? delta : undefined;
+  return delta > 0 ? capRetryAfter(delta) : undefined;
 }
 
 export class SourceHealth {
@@ -42,6 +52,15 @@ export class SourceHealth {
     this._reason = null;
     this._failures = 0;
     this._retryAfterMs = undefined;
+    this._cycle = 0;
+    this._failureCycle = -1;
+  }
+
+  // Call once at the start of every poll cycle. Backoff counts failing cycles,
+  // not failing calls, because one poll makes several calls.
+  beginCycle() {
+    if (this._failureCycle !== this._cycle) this._failures = 0;
+    this._cycle += 1;
   }
 
   _status() {
@@ -59,9 +78,12 @@ export class SourceHealth {
   recordSuccess() {
     const before = this._status();
     this._lastSuccess = this._now();
-    this._reason = null;
-    this._failures = 0;
-    this._retryAfterMs = undefined;
+    // Within a cycle that already saw a failure the data is still incomplete.
+    if (this._failureCycle !== this._cycle) {
+      this._reason = null;
+      this._failures = 0;
+      this._retryAfterMs = undefined;
+    }
     return this._transition(before);
   }
 
@@ -71,16 +93,30 @@ export class SourceHealth {
     // A 4xx such as 404 proves the cloud answered; it says nothing about health.
     if (kind === 'client') return { changed: false, from: before, to: before, reason: this._reason };
     this._reason = kind;
-    this._failures += 1;
+    if (this._failureCycle !== this._cycle) this._failures += 1;
+    this._failureCycle = this._cycle;
     this._retryAfterMs = kind === 'rate_limited' ? retryAfterMs(error, this._now()) : undefined;
+    return this._transition(before);
+  }
+
+  // Mark the held data stale without counting a failure (no backoff), for
+  // example when a response was incomplete.
+  markStale(reason) {
+    const before = this._status();
+    this._reason = reason;
+    this._failureCycle = this._cycle;
     return this._transition(before);
   }
 
   backoffMs() {
     if (!this._failures) return 0;
-    if (this._retryAfterMs !== undefined) return this._retryAfterMs;
+    if (this._retryAfterMs !== undefined) return capRetryAfter(this._retryAfterMs);
     if (this._reason === 'auth_expired') return this._maxBackoffMs;
-    return Math.min(this._maxBackoffMs, this._baseBackoffMs * 2 ** (this._failures - 1));
+    // One rejected access token is retried at the normal interval (the token
+    // was dropped, so the next poll refreshes it); backoff starts after that.
+    const n = this._reason === 'token_rejected' ? this._failures - 1 : this._failures;
+    if (n < 1) return 0;
+    return Math.min(this._maxBackoffMs, this._baseBackoffMs * 2 ** (n - 1));
   }
 
   nextDelayMs(intervalMs) {

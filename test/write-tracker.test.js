@@ -78,3 +78,32 @@ test('snapshot lists status per zone with timestamps', () => {
   w.accepted('1', { clear: true });
   assert.deepEqual(w.snapshot(), { 1: { status: 'accepted', acceptedAt: '2026-11-14T10:00:00.000Z', confirmedAt: null } });
 });
+
+test('an accepted write turns unconfirmed on sweep without any poll', () => {
+  let t = 0;
+  const w = new WriteTracker({ now: () => t, confirmTimeoutMs: 1000 });
+  w.accepted('1', { clear: true });
+  assert.deepEqual(w.sweep(), []);
+  t = 1500;
+  assert.deepEqual(w.sweep().map((x) => x.to), ['unconfirmed']);
+  assert.equal(w.snapshot()['1'].status, 'unconfirmed');
+});
+
+test('snapshot itself expires overdue writes', () => {
+  let t = 0;
+  const w = new WriteTracker({ now: () => t, confirmTimeoutMs: 1000 });
+  w.accepted('presence', { value: 'AWAY' });
+  t = 2000;
+  assert.equal(w.snapshot().presence.status, 'unconfirmed');
+});
+
+test('value writes (presence, child lock, open window) confirm on a matching observation', () => {
+  const w = new WriteTracker({ now: () => 0 });
+  w.accepted('presence', { value: 'AWAY' });
+  w.accepted('childLock:RU1', { value: true });
+  w.accepted('openWindow:3', { value: false });
+  assert.deepEqual(w.observe('presence', 'HOME'), []);
+  assert.equal(w.observe('presence', 'AWAY').length, 1);
+  assert.equal(w.observe('childLock:RU1', true).length, 1);
+  assert.equal(w.observe('openWindow:3', false).length, 1);
+});

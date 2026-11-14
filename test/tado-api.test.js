@@ -132,7 +132,7 @@ test('an expired device login reports auth_expired and enters a cooldown with no
   await s.done();
 });
 
-test('a 401 from the API after a valid token is auth_expired and drops the cached access token', async () => {
+test('a 401 from the API after a valid token is token_rejected and drops the cached access token', async () => {
   let n = 0;
   const s = await setup((url) => {
     if (url.endsWith('/oauth2/token')) return { access_token: `AT${++n}`, refresh_token: 'RTX' };
@@ -140,7 +140,7 @@ test('a 401 from the API after a valid token is auth_expired and drops the cache
   });
   await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
   await assert.rejects(() => s.tado.apiCall('/api/v2/me'));
-  assert.equal(s.tado.health.snapshot().reason, 'auth_expired');
+  assert.equal(s.tado.health.snapshot().reason, 'token_rejected');
   s.clock.t += 1000;
   await assert.rejects(() => s.tado.apiCall('/api/v2/me'));
   assert.equal(n, 2, 'token was refreshed again instead of reusing the rejected one');
@@ -183,5 +183,44 @@ test('Fahrenheit writes are tracked in Celsius', async () => {
   await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
   await s.tado.setZoneOverlay(1, 7, 'ON', 68, 'MANUAL', 'FAHRENHEIT');
   assert.equal(s.tado.writes.get('7').expect.temperature, 20);
+  await s.done();
+});
+
+async function okSetup() {
+  const s = await setup((url) => (url.endsWith('/oauth2/token') ? tokenOk : {}));
+  await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
+  return s;
+}
+
+test('switchAll and resumeShedule track a write per zone', async () => {
+  const s = await okSetup();
+  await s.tado.switchAll(1, [{ id: 3, power: 'OFF' }, { id: 4, power: 'ON', maxTempInCelsius: 25 }]);
+  assert.deepEqual(s.tado.writes.get('3').expect, { power: 'OFF' });
+  assert.deepEqual(s.tado.writes.get('4').expect, { power: 'ON', temperature: 25 });
+  await s.tado.resumeShedule(1, [3, 5]);
+  assert.deepEqual(s.tado.writes.get('3').expect, { clear: true });
+  assert.deepEqual(s.tado.writes.get('5').expect, { clear: true });
+  await s.done();
+});
+
+test('open window, presence lock and child lock writes are tracked', async () => {
+  const s = await okSetup();
+  await s.tado.setOpenWindowMode(1, 9, true);
+  assert.deepEqual(s.tado.writes.get('openWindow:9').expect, { value: true });
+  await s.tado.setPresenceLock(1, 'away');
+  assert.deepEqual(s.tado.writes.get('presence').expect, { value: 'AWAY' });
+  await s.tado.setChildLock('RU123', true);
+  assert.deepEqual(s.tado.writes.get('childLock:RU123').expect, { value: true });
+  await s.done();
+});
+
+test('failed presence lock write is not tracked', async () => {
+  const s = await setup((url) => {
+    if (url.endsWith('/oauth2/token')) return tokenOk;
+    throw httpError(500);
+  });
+  await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
+  await assert.rejects(() => s.tado.setPresenceLock(1, 'HOME'));
+  assert.equal(s.tado.writes.get('presence'), undefined);
   await s.done();
 });

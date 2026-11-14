@@ -704,7 +704,9 @@ export default class Tado {
       homePresence: presence,
     };
 
-    return this.apiCall(`/api/v2/homes/${home_id}/presenceLock`, method, config);
+    const result = await this.apiCall(`/api/v2/homes/${home_id}/presenceLock`, method, config);
+    this.writes.accepted('presence', { value: presence });
+    return result;
   }
 
   async isAnyoneAtHome(home_id) {
@@ -740,11 +742,11 @@ export default class Tado {
   }
 
   async setOpenWindowMode(home_id, zone_id, activate) {
-    if (activate) {
-      return this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/state/openWindow/activate`, 'POST');
-    } else {
-      return this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/state/openWindow`, 'DELETE');
-    }
+    const result = activate
+      ? await this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/state/openWindow/activate`, 'POST')
+      : await this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/state/openWindow`, 'DELETE');
+    this.writes.accepted(`openWindow:${zone_id}`, { value: !!activate });
+    return result;
   }
 
   async getAirComfort(home_id) {
@@ -756,7 +758,9 @@ export default class Tado {
       throw new Error('Cannot change child lock state. No serialNumber is given.');
     }
 
-    return this.apiCall(`/api/v2/devices/${serialNumber}/childLock`, 'PUT', { childLockEnabled: state });
+    const result = await this.apiCall(`/api/v2/devices/${serialNumber}/childLock`, 'PUT', { childLockEnabled: state });
+    this.writes.accepted(`childLock:${serialNumber}`, { value: !!state });
+    return result;
   }
 
   async switchAll(home_id, zones = []) {
@@ -792,7 +796,12 @@ export default class Tado {
       postData.overlays.push(zoneData);
     });
 
-    return this.apiCall(`/api/v2/homes/${home_id}/overlay`, 'POST', postData);
+    const result = await this.apiCall(`/api/v2/homes/${home_id}/overlay`, 'POST', postData);
+    zones.forEach((zone) => {
+      const power = zone.power || 'OFF';
+      this.writes.accepted(zone.id, power === 'ON' ? { power, temperature: zone.maxTempInCelsius } : { power });
+    });
+    return result;
   }
 
   async resumeShedule(home_id, roomIds = []) {
@@ -804,7 +813,9 @@ export default class Tado {
       rooms: roomIds.toString(),
     };
 
-    return this.apiCall(`/api/v2/homes/${home_id}/overlay`, 'DELETE', {}, params);
+    const result = await this.apiCall(`/api/v2/homes/${home_id}/overlay`, 'DELETE', {}, params);
+    roomIds.forEach((id) => this.writes.accepted(id, { clear: true }));
+    return result;
   }
 
   async getRunningTime(home_id, time, from, to) {

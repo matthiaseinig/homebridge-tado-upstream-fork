@@ -1,12 +1,12 @@
 {
   "name": "@homebridge-plugins/homebridge-tado",
-  "version": "9.1.0",
+  "version": "9.1.1",
   "description": "Homebridge plugin for controlling tado° devices.",
   "main": "index.js",
   "scripts": {
     "lint": "eslint",
     "lint:fix": "npm run lint -- --fix",
-    "test": "node --test --test-timeout=15000 test/"
+    "test": "node --import ./test/setup-no-network.js --test --test-timeout=15000 test/"
   },
   "type": "module",
   "repository": {

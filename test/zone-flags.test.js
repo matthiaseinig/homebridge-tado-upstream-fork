@@ -39,3 +39,14 @@ test('missing or malformed zone state yields all-false flags without throwing', 
   assert.deepEqual(zoneFlags({}), none);
   assert.deepEqual(zoneFlags({ overlay: { termination: null }, setting: null }), none);
 });
+
+test('boost needs a HEATING zone, exactly 25 C and a timer overlay', () => {
+  const ac = { ...fx.boost, setting: { ...fx.boost.setting, type: 'AIR_CONDITIONING' } };
+  assert.equal(zoneFlags(ac).boost, false);
+  const hotWater = { ...fx.boost, setting: { ...fx.boost.setting, type: 'HOT_WATER' } };
+  assert.equal(zoneFlags(hotWater).boost, false);
+  const warmer = { ...fx.boost, setting: { ...fx.boost.setting, temperature: { celsius: 27 } } };
+  assert.equal(zoneFlags(warmer).boost, false);
+  const manual25 = { ...fx.boost, overlay: { ...fx.boost.overlay, termination: { type: 'MANUAL' } } };
+  assert.equal(zoneFlags(manual25).boost, false);
+});

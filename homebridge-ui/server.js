@@ -1,5 +1,6 @@
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
 import TadoApi from '../src/tado/tado-api.js';
+import Logger from '../src/helper/logger.js';
 
 class UiServer extends HomebridgePluginUiServer {
   constructor() {
@@ -78,7 +79,7 @@ class UiServer extends HomebridgePluginUiServer {
 
     } catch (err) {
 
-      console.log(err);
+      Logger.error(err);
 
       throw new RequestError(err.message);
 
