@@ -296,7 +296,7 @@ test('token log lines never contain error text that could quote a token', async 
     });
     await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
     await assert.rejects(() => s.tado.apiCall('/api/v2/me'), (e) => !e.message.includes(leaky));
-    assert.ok(lines.some((l) => l.includes('Error while refreshing token: HTTP 503')));
+    assert.ok(lines.some((l) => l.includes('Token refresh failed (reason: HTTP 503)')));
     for (const l of lines) assert.doesNotMatch(l, /LEAKYSECRET/);
     await s.done();
 

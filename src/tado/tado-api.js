@@ -151,7 +151,8 @@ export default class Tado {
 
       return this._tadoBearerToken.access_token;
     } catch (error) {
-      throw new Error(`API call failed. Could not get access token: ${describeError(error)}`, { cause: error });
+      // no "token:" before the reason: the log redactor treats that as a credential key
+      throw new Error(`Access token request failed (reason: ${describeError(error)})`, { cause: error });
     }
   }
 
@@ -204,7 +205,7 @@ export default class Tado {
       }
       this._tadoBearerToken = { access_token, refresh_token, timestamp: this._now() };
     } catch (error) {
-      Logger.warn(`Error while refreshing token: ${describeError(error)}`);
+      Logger.warn(`Token refresh failed (reason: ${describeError(error)})`);
       const status = error.response?.statusCode;
       // Only a refusal from the token endpoint means the refresh token is dead.
       // Outages, timeouts and rate limits must keep it, otherwise a cloud blip
