@@ -1,5 +1,10 @@
 # Changelog
 
+## v9.1.9 - 2026-11-15
+- Existing logins are picked up again: when the current token file is missing or unreadable, the plugin also tries the file name written by earlier builds (sha256 of the username, first 16 hex characters), so an installed login no longer forces a new device login
+- On a successful refresh the login is written under the current name (atomic, mode 0600) and the older file is removed only after that write succeeded; it is kept while the refresh has not succeeded
+- Token files are written atomically with owner-only permissions
+
 ## v9.1.8 - 2026-11-15
 - The plugin's own token log lines no longer put a reason after "token:", which the log redactor treats as a credential key: "Token refresh failed (reason: EAI_AGAIN)" and "Access token request failed (reason: ...)"; the sign-in-again message and error codes now reach the log readable
 - End-to-end tests for the login cooldown message and for the handler feature names against the real Tado API object

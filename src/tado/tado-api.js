@@ -1,7 +1,9 @@
 import Logger from '../helper/logger.js';
 import got from 'got';
 import { join } from 'path';
-import { access, readFile, writeFile } from 'fs/promises';
+import { createHash } from 'crypto';
+import { access, readFile, unlink, writeFile } from 'fs/promises';
+import { writeFileAtomic } from '../helper/atomic-write.js';
 import { SourceHealth } from '../helper/source-health.js';
 import { WriteTracker } from '../helper/write-tracker.js';
 import { describeError } from '../helper/safe-error.js';
@@ -25,6 +27,13 @@ function _getSimpleHash(str) {
   return (hash >>> 0).toString(36).padStart(7, '0');
 }
 
+// Token file name used by the plugin builds that were installed before 9.1.x
+// (sha256 of the username, first 16 hex characters). Only used to find and
+// migrate an existing login; the username is never logged.
+function _getLegacyHash(str) {
+  return createHash('sha256').update(String(str)).digest('hex').slice(0, 16);
+}
+
 export default class Tado {
   // deps (optional, for tests): { http, now, sleep }
   constructor(name, auth, storagePath, counterActivated, deps = {}) {
@@ -44,6 +53,9 @@ export default class Tado {
     this.hashedUsername = _getSimpleHash(auth.username);
     this.username = usesExternalTokenFile ? undefined : auth.username;
     this._tadoInternalTokenFilePath = usesExternalTokenFile ? undefined : join(this.storagePath, `.tado-token-${this.hashedUsername}.json`);
+    // earlier file names to pick up when the current one is missing
+    this._legacyTokenFilePaths = usesExternalTokenFile ? [] : [join(this.storagePath, `.tado-token-${_getLegacyHash(auth.username)}.json`)];
+    this._tokenSourcePath = undefined;
     this._tadoApiClientId = tado_client_id;
     this._tadoTokenPromise = undefined;
     this._tadoAuthenticationCallback = undefined;
@@ -159,7 +171,6 @@ export default class Tado {
   async _retrieveToken() {
     try {
       if (this._tadoBearerToken.refresh_token) return this._refreshToken(this._tadoBearerToken.refresh_token);
-      await access(this._tadoInternalTokenFilePath);
       const refresh_token = await this._retrieveRefreshTokenFromInternalFile();
       return this._refreshToken(refresh_token);
 
@@ -168,21 +179,51 @@ export default class Tado {
     }
   }
 
+  async _fileExists(path) {
+    try {
+      await access(path);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  // Reads the refresh token from the current token file, or from a file an earlier
+  // plugin build wrote when the current one does not exist. The source is remembered
+  // so a successful refresh can migrate to the current name.
   async _retrieveRefreshTokenFromInternalFile() {
     const maxRetries = 3;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const data = await readFile(this._tadoInternalTokenFilePath, "utf8");
-        const json = JSON.parse(data);
-        if (json.refresh_token) return json.refresh_token;
-      } catch (error) {
-        Logger.warn(`Failed to load from internal file (attempt ${attempt} of ${maxRetries}): ${describeError(error)}`);
-      }
-      if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+    for (const path of [this._tadoInternalTokenFilePath, ...this._legacyTokenFilePaths]) {
+      if (!(await this._fileExists(path))) continue;
+      const isLegacy = path !== this._tadoInternalTokenFilePath;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const data = await readFile(path, "utf8");
+          const json = JSON.parse(data);
+          if (json.refresh_token) {
+            this._tokenSourcePath = path;
+            if (isLegacy) Logger.info('Using the login from a previous plugin version.', this.name);
+            return json.refresh_token;
+          }
+        } catch (error) {
+          Logger.warn(`Failed to load from internal file (attempt ${attempt} of ${maxRetries}): ${describeError(error)}`);
+        }
+        if (attempt < maxRetries) await this._sleep(1000);
       }
     }
     throw new Error(`Failed to load from internal file after ${maxRetries} attempts.`);
+  }
+
+  // Writes the token file under the current name (atomic, owner-only). An older
+  // file the login was read from is removed only after this write succeeded.
+  async _persistTokens(access_token, refresh_token) {
+    await writeFileAtomic(this._tadoInternalTokenFilePath, JSON.stringify({ access_token, refresh_token }), { mode: 0o600 });
+    const source = this._tokenSourcePath;
+    this._tokenSourcePath = this._tadoInternalTokenFilePath;
+    if (source && source !== this._tadoInternalTokenFilePath) {
+      await unlink(source).catch(() => {});
+      Logger.info('Migrated the login to the current token file name.', this.name);
+    }
   }
 
   async _refreshToken(old_refresh_token) {
@@ -216,7 +257,7 @@ export default class Tado {
       }
       throw error;
     }
-    await writeFile(this._tadoInternalTokenFilePath, JSON.stringify({ access_token, refresh_token }));
+    await this._persistTokens(access_token, refresh_token);
   }
 
   async _authenticateUser() {
@@ -269,7 +310,7 @@ export default class Tado {
             this._tadoBearerToken = { access_token: undefined, refresh_token: undefined, timestamp: 0 };
             throw error;
           }
-          await writeFile(this._tadoInternalTokenFilePath, JSON.stringify({ access_token, refresh_token }));
+          await this._persistTokens(access_token, refresh_token);
           this._authCooldownUntil = 0;
           Logger.info("Authentication successful!");
           return;
