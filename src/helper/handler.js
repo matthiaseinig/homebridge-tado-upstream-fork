@@ -5,7 +5,6 @@ import { join } from "path";
 import { randomUUID } from 'crypto';
 import { buildStatusSnapshot } from './status-snapshot.js';
 import { writeFileAtomic } from './atomic-write.js';
-import { zoneFlags } from './zone-flags.js';
 
 const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 const helpers = {};
@@ -751,13 +750,20 @@ export default (api, accessories, config, tado, telegram) => {
     }
   }
 
-  async function persistStatus() {
+  // Writes are chained so an older snapshot can never overwrite a newer one.
+  function persistStatus() {
+    helpers[config.homeId].statusPromise = (helpers[config.homeId].statusPromise ?? Promise.resolve()).then(_persistStatus);
+    return helpers[config.homeId].statusPromise;
+  }
+
+  async function _persistStatus() {
     try {
       for (const t of tado.writes.sweep()) Logger.warn(`Write ${t.key} ${t.to}.`, config.homeName);
       const snapshot = buildStatusSnapshot({
         health: tado.health,
         writes: tado.writes,
         zoneStates: helpers[config.homeId].lastZoneStates,
+        staleZones: helpers[config.homeId].staleZones,
       });
       await writeFileAtomic(
         join(helpers[config.homeId].storagePath, `tado-status-${config.homeId}.json`),
@@ -803,6 +809,12 @@ export default (api, accessories, config, tado, telegram) => {
     return interval + randomOffset;
   }
 
+  function logHealthChange(change) {
+    if (!change.changed) return;
+    if (change.to === 'ok' && change.from === 'stale') Logger.info('Tado cloud reachable again, data is current.', config.homeName);
+    else if (change.reason) Logger.warn(`Tado data is ${change.to} (${change.reason}); keeping the last known values.`, config.homeName);
+  }
+
   function initTasks() {
     if (helpers[config.homeId].tasksInitialized) return;
     helpers[config.homeId].tasksInitialized = true;
@@ -811,6 +823,7 @@ export default (api, accessories, config, tado, telegram) => {
       try {
         await getStates();
       } finally {
+        logHealthChange(tado.health.endCycle());
         const interval = _getPollingInterval();
         helpers[config.homeId].nextPollingTime = Date.now() + interval;
         setTimeout(poll, Math.min(interval, MAX_TIMER_MS));
@@ -972,7 +985,12 @@ export default (api, accessories, config, tado, telegram) => {
       zoneStates = (await tado.getZoneStates(config.homeId))["zoneStates"] ?? {};
       void persistZoneStates(config.homeId, zoneStates);
     }
-    helpers[config.homeId].lastZoneStates = zoneStates;
+    {
+      // keep each missing zone's last entry (flagged stale) instead of dropping it
+      const present = Object.fromEntries(Object.entries(zoneStates).filter(([, state]) => state && state.setting));
+      helpers[config.homeId].lastZoneStates = { ...(helpers[config.homeId].lastZoneStates ?? {}), ...present };
+      helpers[config.homeId].staleZones = config.zones.map((z) => String(z.id)).filter((id) => !present[id]);
+    }
 
     let zoneStatesIncomplete = !Object.keys(zoneStates).length;
     for (const zone of config.zones) {
@@ -989,7 +1007,8 @@ export default (api, accessories, config, tado, telegram) => {
       for (const t of tado.writes.observe(zone.id, zoneState)) {
         Logger.info(`Write to zone ${zone.id} ${t.to}.`, config.homeName);
       }
-      for (const t of tado.writes.observe(`openWindow:${zone.id}`, zoneFlags(zoneState).openWindow)) {
+      //the open window mode is active while zoneState.openWindow is set; openWindowDetected is only the sensor
+      for (const t of tado.writes.observe(`openWindow:${zone.id}`, Boolean(zoneState.openWindow))) {
         Logger.info(`Open window write for zone ${zone.id} ${t.to}.`, config.homeName);
       }
 

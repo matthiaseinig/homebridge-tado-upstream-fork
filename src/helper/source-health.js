@@ -54,10 +54,12 @@ export class SourceHealth {
     this._retryAfterMs = undefined;
     this._cycle = 0;
     this._failureCycle = -1;
+    this._reported = { status: 'pending', reason: null };
   }
 
-  // Call once at the start of every poll cycle. Backoff counts failing cycles,
-  // not failing calls, because one poll makes several calls.
+  // Call once at the start of every poll cycle. A cycle counts as failed when
+  // any call in it failed; backoff counts consecutive failed cycles, and only a
+  // fully successful cycle resets it, because one poll makes several calls.
   beginCycle() {
     if (this._failureCycle !== this._cycle) this._failures = 0;
     this._cycle += 1;
@@ -79,12 +81,26 @@ export class SourceHealth {
     const before = this._status();
     this._lastSuccess = this._now();
     // Within a cycle that already saw a failure the data is still incomplete.
+    // The failure count is not reset here (beginCycle does that), so a success
+    // earlier in a failing cycle cannot hide the failure.
     if (this._failureCycle !== this._cycle) {
       this._reason = null;
-      this._failures = 0;
       this._retryAfterMs = undefined;
     }
     return this._transition(before);
+  }
+
+  // Call once at the end of a poll cycle. Reports a change only against the
+  // state reported at the end of the previous cycle, so calls that succeed and
+  // fail inside one cycle never show up as a flip.
+  endCycle() {
+    if (this._failureCycle !== this._cycle) this._failures = 0; // fully successful cycle
+    const status = this._status();
+    const reason = status === 'stale' && !this._reason ? 'overdue' : this._reason;
+    const from = this._reported.status;
+    const changed = from !== status || this._reported.reason !== reason;
+    this._reported = { status, reason };
+    return { changed, from, to: status, reason };
   }
 
   recordFailure(error) {

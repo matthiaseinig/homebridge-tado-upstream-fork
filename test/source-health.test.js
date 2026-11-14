@@ -125,6 +125,7 @@ test('backoffMs grows exponentially per failing poll cycle, is capped, and honou
   assert.equal(h.backoffMs(), 600000);
   h.beginCycle();
   h.recordSuccess();
+  h.endCycle();
   assert.equal(h.backoffMs(), 0);
 });
 
@@ -138,21 +139,78 @@ test('several failed calls in one poll cycle count as one failure', () => {
   assert.equal(h.backoffMs(), 60000);
 });
 
-test('a success later in a failing cycle does not reset the backoff or the stale reason', () => {
+test('a success earlier or later in a failing cycle never resets the backoff or the stale reason', () => {
   const h = new SourceHealth({ now: () => 5, baseBackoffMs: 30000, maxBackoffMs: 600000 });
   h.recordSuccess();
+  // cycle 1: failure then success
   h.beginCycle();
   h.recordFailure(httpError(503));
   h.recordSuccess();
+  h.endCycle();
   assert.equal(h.snapshot().sourceStatus, 'stale');
+  assert.equal(h.backoffMs(), 30000);
+  // cycle 2: success first, then failure (the old code reset the count here)
   h.beginCycle();
+  h.recordSuccess();
   h.recordFailure(httpError(503));
-  h.recordSuccess();
+  h.endCycle();
   assert.equal(h.backoffMs(), 60000);
+  // cycle 3: success first, then failure again
   h.beginCycle();
   h.recordSuccess();
+  h.recordFailure(httpError(503));
+  h.endCycle();
+  assert.equal(h.backoffMs(), 120000);
+  // cycle 4: fully successful
+  h.beginCycle();
+  h.recordSuccess();
+  h.recordSuccess();
+  h.endCycle();
   assert.equal(h.snapshot().sourceStatus, 'ok');
   assert.equal(h.backoffMs(), 0);
+});
+
+test('endCycle reports a change only against the previous cycle, not per call', () => {
+  const h = new SourceHealth({ now: () => 5 });
+  h.beginCycle();
+  h.recordSuccess();
+  assert.deepEqual(h.endCycle(), { changed: true, from: 'pending', to: 'ok', reason: null });
+  // cycle with success then failure: stale at the end
+  h.beginCycle();
+  h.recordSuccess();
+  h.recordFailure(httpError(503));
+  assert.deepEqual(h.endCycle(), { changed: true, from: 'ok', to: 'stale', reason: 'offline' });
+  // two more cycles that start with a success and then fail again: no flip reported
+  for (let i = 0; i < 2; i++) {
+    h.beginCycle();
+    h.recordSuccess();
+    h.recordFailure(httpError(503));
+    assert.equal(h.endCycle().changed, false);
+  }
+  // fully healthy cycle: reachable again, once
+  h.beginCycle();
+  h.recordSuccess();
+  const back = h.endCycle();
+  assert.deepEqual([back.changed, back.from, back.to], [true, 'stale', 'ok']);
+  h.beginCycle();
+  h.recordSuccess();
+  assert.equal(h.endCycle().changed, false);
+});
+
+test('a persistently incomplete response does not flap between ok and stale', () => {
+  const h = new SourceHealth({ now: () => 5 });
+  h.beginCycle();
+  h.recordSuccess();
+  h.endCycle();
+  let flips = 0;
+  for (let i = 0; i < 5; i++) {
+    h.beginCycle();
+    h.recordSuccess();
+    h.recordSuccess();
+    h.markStale('incomplete');
+    if (h.endCycle().changed) flips += 1;
+  }
+  assert.equal(flips, 1, 'only the first move to stale is reported');
 });
 
 test('a single rejected access token (401) does not jump to the maximum backoff', () => {

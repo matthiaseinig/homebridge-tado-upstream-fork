@@ -1,5 +1,13 @@
 # Changelog
 
+## v9.1.2 - 2026-11-14
+- Redaction now scans structurally instead of with one regex: quoted, escaped, URL-encoded, single-quoted, backtick (util.inspect) and &quot; values are masked up to their real closing quote, including nested escaped JSON; values starting with a quote in form and query strings are masked; bare token, secret and authorization keys are covered; a fuzz test checks that no 6+ character secret survives
+- Backoff counts a cycle as failed when any call in it failed; a partial success no longer resets the failure count, only a fully successful cycle does
+- Health changes are logged once per poll cycle; no "reachable again" flapping
+- The status file keeps the last entry of zones missing from a response, flagged stale; writes are serialized and temp file names are unique
+- Open window write confirmation uses the open window mode (zoneState.openWindow), not the detection sensor
+- Test for the 2^31 ms timer clamp
+
 ## v9.1.1 - 2026-11-14
 - An empty or partial zone-states response no longer sets the Central Switch to Off: the last value is kept and the data is marked stale
 - Backoff counts failing poll cycles, not failing calls; one rejected access token (401) is retried at the normal interval; a 403 is not treated as an expired login

@@ -1,3 +1,4 @@
+import util from 'node:util';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Logger from '../src/helper/logger.js';
@@ -110,4 +111,33 @@ test('unquoted values stop at ampersand, whitespace, comma or brace', () => {
 test('redact is idempotent', () => {
   const once = redact('{"password":"a b","refresh_token":"x"} refresh_token=y');
   assert.equal(redact(once), once);
+});
+
+test('prose that merely mentions a token is not masked, credential-like values are', () => {
+  assert.equal(redact('Error while refreshing token: HTTP 503'), 'Error while refreshing token: HTTP 503');
+  assert.equal(redact('token=abcdef0123456789'), 'token=[redacted]');
+  assert.equal(redact('{"token":"abc"}'), '{"token":"[redacted]"}');
+});
+
+test('structural scanner: escaped JSON values containing escaped quotes are fully masked', () => {
+  const inner = JSON.stringify({ password: 'ab"TAILXYZ, cd' });
+  const out = redact(JSON.stringify(inner));
+  assert.doesNotMatch(out, /TAILXYZ|cd/);
+  const triple = JSON.stringify(JSON.stringify(JSON.stringify({ refresh_token: 'a"TAILXYZ"b' })));
+  assert.doesNotMatch(redact(triple), /TAILXYZ/);
+});
+
+test('values starting with an encoded or plain quote in form and query strings are masked', () => {
+  assert.doesNotMatch(redact('password=%22TAILXYZ%20abc&x=1'), /TAILXYZ/);
+  assert.doesNotMatch(redact("password='TAILXYZ&x=1"), /TAILXYZ/);
+  assert.doesNotMatch(redact('refresh_token=%27TAILXYZ%27abc&x=1'), /TAILXYZ|abc/);
+  assert.match(redact('refresh_token=%22TAILXYZ&x=1'), /&x=1$/);
+});
+
+test('raw authorization, bare token keys, util.inspect backticks and &quot; are covered', () => {
+  assert.doesNotMatch(redact('{"authorization":"TAILXYZ0123"}'), /TAILXYZ/);
+  assert.doesNotMatch(redact('{"token":"TAILXYZ0123"}'), /TAILXYZ/);
+  assert.doesNotMatch(redact(util.inspect({ password: `it's "TAILXYZ0123"` })), /TAILXYZ/);
+  assert.doesNotMatch(redact('password&quot;:&quot;TAILXYZ0123&quot;'), /TAILXYZ/);
+  assert.equal(redact('Authorization: Bearer abcdef'), 'Authorization: Bearer [redacted]');
 });

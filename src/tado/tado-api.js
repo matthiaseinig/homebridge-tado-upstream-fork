@@ -336,11 +336,10 @@ export default class Tado {
     throw new Error(`Failed to load from external file after ${maxRetries} attempts.`);
   }
 
+  // Health changes are logged once per poll cycle (see the handler), not per call.
   _recordHealth(error) {
-    const change = error ? this.health.recordFailure(error) : this.health.recordSuccess();
-    if (!change.changed) return;
-    if (change.to === 'ok') Logger.info('Tado cloud reachable again, data is current.', this.name);
-    else Logger.warn(`Tado data is ${change.to} (${change.reason}); keeping the last known values.`, this.name);
+    if (error) this.health.recordFailure(error);
+    else this.health.recordSuccess();
   }
 
   async apiCall(path, method = 'GET', data = {}, params = {}, tado_url_dif) {

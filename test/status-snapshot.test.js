@@ -19,8 +19,8 @@ test('snapshot combines source status, zone flags and write state', () => {
     sourceTimestamp: '2026-11-14T10:00:00.000Z',
     reason: null,
     zones: {
-      1: { boost: true, boostRemainingS: 1260, openWindow: false, openWindowRemainingS: null, write: null },
-      2: { boost: false, boostRemainingS: null, openWindow: true, openWindowRemainingS: 600, write: { status: 'accepted', acceptedAt: '2026-11-14T10:00:00.000Z', confirmedAt: null } },
+      1: { boost: true, boostRemainingS: 1260, openWindow: false, openWindowRemainingS: null, write: null, stale: false },
+      2: { boost: false, boostRemainingS: null, openWindow: true, openWindowRemainingS: 600, write: { status: 'accepted', acceptedAt: '2026-11-14T10:00:00.000Z', confirmedAt: null }, stale: false },
     },
   });
 });
@@ -29,4 +29,21 @@ test('snapshot contains no token-like fields', () => {
   const health = new SourceHealth();
   const text = JSON.stringify(buildStatusSnapshot({ health, writes: new WriteTracker(), zoneStates: {} }));
   assert.doesNotMatch(text, /token|password|authorization/i);
+});
+
+test('missing zones keep their last entry flagged stale', () => {
+  const health = new SourceHealth({ now: () => 0 });
+  health.recordSuccess();
+  const snap = buildStatusSnapshot({ health, writes: new WriteTracker(), zoneStates: { 1: fx.boost, 2: fx.openWindow }, staleZones: ['2'] });
+  assert.equal(snap.zones['1'].stale, false);
+  assert.equal(snap.zones['2'].stale, true);
+  assert.equal(snap.zones['2'].openWindow, true);
+});
+
+test('when the source is stale every zone entry is flagged stale', () => {
+  const health = new SourceHealth({ now: () => 0 });
+  health.recordSuccess();
+  health.recordFailure(Object.assign(new Error('x'), { code: 'ETIMEDOUT' }));
+  const snap = buildStatusSnapshot({ health, writes: new WriteTracker(), zoneStates: { 1: fx.boost } });
+  assert.equal(snap.zones['1'].stale, true);
 });
