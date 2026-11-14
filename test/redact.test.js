@@ -77,3 +77,37 @@ test('redact masks secrets inside Error messages and stacks', () => {
   const out = redact(e);
   assert.doesNotMatch(out.message + out.stack, /SECRETX|eyJ/);
 });
+
+test('quoted secrets are masked up to the closing quote (spaces, commas, percent signs)', () => {
+  assert.equal(redact('password: "my pass, 1%"'), 'password: "[redacted]"');
+  assert.equal(redact("password='my pass, 1%' next"), "password='[redacted]' next");
+  assert.equal(redact('{"password":"a b, c % d","user":"x"}'), '{"password":"[redacted]","user":"x"}');
+  assert.equal(redact('{"refresh_token":"abc def","a":1}'), '{"refresh_token":"[redacted]","a":1}');
+});
+
+test('escaped quotes inside and around a secret do not end the mask early', () => {
+  assert.doesNotMatch(redact('{"password":"ab\\"TAILX, c"}'), /TAILX/);
+  const escaped = String.raw`{\"password\":\"my pass, TAILX%\",\"user\":\"x\"}`;
+  const out = redact(escaped);
+  assert.doesNotMatch(out, /TAILX|my pass/);
+  assert.match(out, /user/);
+});
+
+test('URL-encoded JSON treats %22 and %27 as delimiters', () => {
+  const enc = '%7B%22password%22%3A%22my%20pass%2C%201%25TAILX%22%2C%22user%22%3A%22x%22%7D';
+  const out = redact(enc);
+  assert.doesNotMatch(out, /TAILX|my%20pass/);
+  assert.match(out, /%22user%22%3A%22x%22/);
+  assert.doesNotMatch(redact('%27password%27%3A%27a%20TAILX%27'), /TAILX/);
+});
+
+test('unquoted values stop at ampersand, whitespace, comma or brace', () => {
+  assert.equal(redact('password=SECRETX&user=bob'), 'password=[redacted]&user=bob');
+  assert.equal(redact('password=SECRETX, user=bob'), 'password=[redacted], user=bob');
+  assert.equal(redact('{password: SECRETX}'), '{password: [redacted]}');
+});
+
+test('redact is idempotent', () => {
+  const once = redact('{"password":"a b","refresh_token":"x"} refresh_token=y');
+  assert.equal(redact(once), once);
+});

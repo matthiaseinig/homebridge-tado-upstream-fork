@@ -6,7 +6,7 @@
 - Retry-After is capped at 15 minutes
 - Boost is only reported for HEATING zones at 25 C with a timer overlay
 - Writes unconfirmed after the timeout even without a poll; switchAll, resumeShedule, open window, presence lock and child lock writes are tracked too
-- Redaction covers raw JWTs, camelCase token keys, escaped and URL-encoded JSON and single-quoted objects; the settings UI server logs through the redacting logger
+- Redaction covers raw JWTs, camelCase token keys, escaped and URL-encoded JSON and single-quoted objects, and masks quoted secrets up to the closing quote (spaces, commas, percent signs); the settings UI server logs through the redacting logger
 - The status file is written atomically
 - Tests run with a network block; package no longer ships tests or .claude/
 
