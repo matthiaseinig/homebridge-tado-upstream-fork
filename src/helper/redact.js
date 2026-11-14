@@ -10,17 +10,24 @@ const MASK = '[redacted]';
 
 const KEY = /(?:(?:access|refresh|id)[_-]?token|token|device[_-]?code|client[_-]?secret|secret|api[_-]?key|password|authorization|set-cookie|cookie|session[_-]?id|session|sid)/gi;
 const JWT = /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)?/g;
-// Bearer/Basic credentials on the same line; a following "key=value" (such as
-// expires_in=3600) is not part of the credential.
-const AUTH_SCHEME = /\b(Bearer|Basic)([ \t]+)([A-Za-z0-9._~+/=-]{8,})/gi;
-const KEY_VALUE_LIKE = /^[A-Za-z_][\w.-]*=[^=]/;
-// A bare "token:" or "session:" is only a credential when it looks like one;
-// error messages such as "refreshing token: Response code 503" stay readable.
-const CREDENTIAL_LIKE = /^[A-Za-z0-9_\-.~+/=]{16,}$/;
+// Bearer/Basic credentials on the same line. The only exemption is the literal
+// "token_type=Bearer expires_in=3600" context, where what follows Bearer is the
+// next field, not a credential.
+const AUTH_SCHEME = /\b(Bearer|Basic)([ \t]+)([A-Za-z0-9._~+/=-]+)/gi;
 const SCHEME_WORD = /^(?:Bearer|Basic|Digest)\b/i;
+const KEY_VALUE_LIKE = /^[A-Za-z_][\w.-]*=[^=]/;
+const TOKEN_TYPE_CONTEXT = /token_type["']?\s*[:=]\s*["']?$/i;
+// A bare "token:", "secret:" or "session:" is masked by default (fail closed).
+// Only text that clearly reads as prose is kept, so error messages stay readable.
+const PROSE_START = /^(?:Response code|getaddrinfo|HTTP|connect|timeout|Request failed|socket|ECONN|ETIMEDOUT|ENOTFOUND)/i;
+// an all-letters word followed by a lowercase word: "expired, please sign in again"
+const PROSE_SENTENCE = /^[A-Za-z]+[,.;:]?\s+[a-z]/;
+
+function looksLikeProse(value) {
+  return PROSE_START.test(value) || PROSE_SENTENCE.test(value);
+}
 
 const WS = /\s/;
-const WORD_END = /[&\s,}]/;
 // An unquoted credential runs to the next "&", newline or "key=" (or the end of
 // the text). Values may contain spaces, so this over-masks rather than leaks.
 const CREDENTIAL_END = /&|[\r\n]|\s[A-Za-z_][\w.-]*=/;
@@ -71,12 +78,6 @@ function findClose(text, from, q) {
     i = r > 0 ? j : i + 1;
   }
   return null;
-}
-
-function wordEnd(text, from) {
-  let i = from;
-  while (i < text.length && !WORD_END.test(text[i])) i += 1;
-  return i;
 }
 
 function credentialEnd(text, from) {
@@ -135,16 +136,8 @@ function redactSecrets(text) {
         }
       }
     }
-    // Plain words such as "refreshing token: HTTP 503" are not secrets: for the
-    // bare words token and secret an unquoted value must look like a credential.
-    if (!open && /^(?:token|secret)$/i.test(m[0]) && wordEnd(text, start) - start < 8) { KEY.lastIndex = m.index + 1; continue; }
-    // bare token/session after a colon: mask only a credential-looking word
-    if (!open && !eq && /^(?:token|session)$/i.test(m[0])) {
-      const word = text.slice(start, wordEnd(text, start));
-      if (!CREDENTIAL_LIKE.test(word)) { KEY.lastIndex = m.index + 1; continue; }
-      tail = start + word.length;
-      end = tail;
-    }
+    // Prose such as "refreshing token: HTTP 503" is not a secret; everything else is masked.
+    if (!open && !eq && /^(?:token|secret|session)$/i.test(m[0]) && looksLikeProse(text.slice(start, end))) { KEY.lastIndex = m.index + 1; continue; }
     out += text.slice(last, start) + MASK;
     last = tail;
     KEY.lastIndex = Math.max(end, tail);
@@ -153,7 +146,10 @@ function redactSecrets(text) {
 }
 
 function redactString(text) {
-  const masked = text.replace(JWT, MASK).replace(AUTH_SCHEME, (all, scheme, space, value) => (KEY_VALUE_LIKE.test(value) ? all : `${scheme}${space}${MASK}`));
+  const masked = text.replace(JWT, MASK).replace(AUTH_SCHEME, (all, scheme, space, value, offset, whole) => {
+    const keep = KEY_VALUE_LIKE.test(value) && TOKEN_TYPE_CONTEXT.test(whole.slice(Math.max(0, offset - 24), offset));
+    return keep ? all : `${scheme}${space}${MASK}`;
+  });
   return redactSecrets(masked);
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## v9.1.6 - 2026-11-15
+- Redaction fails closed again for a bare token:, secret: or session: value: it is masked to the end of the credential unless it clearly reads as prose (known error phrases such as Response code, getaddrinfo, HTTP, connect, timeout, Request failed, socket, ECONN*, ETIMEDOUT, ENOTFOUND, or an all-letters word followed by a lowercase word)
+- Bearer and Basic are masked at any length; the only exemption is the literal token_type=Bearer context
+- user_code stays unmasked
+
 ## v9.1.5 - 2026-11-15
 - The device login URL (user_code) is no longer masked in logs; device_code still is
 - Human-readable messages after "token:" or "session:" (for example "Response code 503") are kept; only credential-looking values (16+ characters, no spaces, base64url, hex or JWT characters) are masked; Bearer masking no longer swallows following fields such as expires_in

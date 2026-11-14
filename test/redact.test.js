@@ -198,12 +198,51 @@ test('credential-looking values after "token:" and "session:" are still masked',
   assert.equal(redact('token: 9f8e7d6c5b4a39281706aabbccdd'), 'token: [redacted]');
   assert.equal(redact('session: abcdef0123456789ABCDEF_-.~'), 'session: [redacted]');
   const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl';
-  assert.equal(redact(`token: ${jwt} (expired)`), 'token: [redacted] (expired)');
-  assert.equal(redact('token: 9f8e7d6c5b4a39281706aabbccdd, retry later'), 'token: [redacted], retry later');
+  assert.equal(redact(`token: ${jwt} (expired)`), 'token: [redacted]');
+  assert.equal(redact('token: 9f8e7d6c5b4a39281706aabbccdd, retry later'), 'token: [redacted]');
 });
 
 test('Bearer masking stops at whitespace so following fields survive', () => {
   assert.equal(redact('token_type=Bearer expires_in=3600'), 'token_type=Bearer expires_in=3600');
   assert.equal(redact('Authorization: Bearer abcdef0123456789 expires_in=3600'), 'Authorization: Bearer [redacted] expires_in=3600');
   assert.equal(redact('Bearer abcdef0123456789\nexpires_in: 3600'), 'Bearer [redacted]\nexpires_in: 3600');
+  assert.equal(redact('{"token_type":"Bearer","expires_in":3600}'), '{"token_type":"Bearer","expires_in":3600}');
+});
+
+test('short and oddly shaped bare tokens fail closed (8 to 15 characters, unusual characters)', () => {
+  for (const value of ['abc12345', 'A1b2C3d4E5f6', 'x9Y8z7W6v5U4t3S', 'ab$cd!ef#gh', 'tok_en%2Bvalue', 'a:b;c|d@e', '12345678', 'Zq9!Zq9!Zq9!Zq9']) {
+    for (const key of ['token', 'session', 'secret']) {
+      const out = redact(`${key}: ${value}`);
+      assert.equal(out, `${key}: [redacted]`, `${key}: ${value}`);
+    }
+  }
+  assert.equal(redact('token: abc12345 and then more words'), 'token: [redacted]');
+});
+
+test('readable messages with known prefixes or a sentence shape stay readable', () => {
+  for (const msg of [
+    'Error while refreshing token: Response code 503 (Service Unavailable)',
+    'Could not get access token: getaddrinfo ENOTFOUND login.tado.com',
+    'Error while refreshing token: HTTP 429',
+    'refreshing token: connect ECONNREFUSED 127.0.0.1:443',
+    'refreshing token: timeout of 15000ms exceeded',
+    'refreshing token: Request failed with status code 500',
+    'refreshing token: socket hang up',
+    'refreshing token: ECONNRESET',
+    'refreshing token: ETIMEDOUT',
+    'session: expired, please sign in again',
+    'token: invalid and was rejected',
+  ]) assert.equal(redact(msg), msg);
+});
+
+test('Bearer and Basic are masked at any length; only token_type=Bearer is exempt', () => {
+  assert.equal(redact('Authorization: Bearer abc'), 'Authorization: Bearer [redacted]');
+  assert.equal(redact('Authorization: Basic Zm9v'), 'Authorization: Basic [redacted]');
+  assert.equal(redact('token_type=Bearer expires_in=3600'), 'token_type=Bearer expires_in=3600');
+  assert.equal(redact('token_type: Bearer expires_in=3600'), 'token_type: Bearer expires_in=3600');
+  assert.equal(redact('Bearer expires_in=3600'), 'Bearer [redacted]', 'no exemption outside the token_type context');
+});
+
+test('user_code stays unmasked', () => {
+  assert.equal(redact('user_code=ABCD-1234'), 'user_code=ABCD-1234');
 });
