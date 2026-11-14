@@ -4,6 +4,7 @@ import { join } from 'path';
 import { access, readFile, writeFile } from 'fs/promises';
 import { SourceHealth } from '../helper/source-health.js';
 import { WriteTracker } from '../helper/write-tracker.js';
+import { describeError } from '../helper/safe-error.js';
 
 const AUTH_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -150,7 +151,7 @@ export default class Tado {
 
       return this._tadoBearerToken.access_token;
     } catch (error) {
-      throw new Error(`API call failed. Could not get access token: ${error.message || JSON.stringify(error)}`, { cause: error });
+      throw new Error(`API call failed. Could not get access token: ${describeError(error)}`, { cause: error });
     }
   }
 
@@ -174,7 +175,7 @@ export default class Tado {
         const json = JSON.parse(data);
         if (json.refresh_token) return json.refresh_token;
       } catch (error) {
-        Logger.warn(`Failed to load from internal file (attempt ${attempt} of ${maxRetries}):`, error);
+        Logger.warn(`Failed to load from internal file (attempt ${attempt} of ${maxRetries}): ${describeError(error)}`);
       }
       if (attempt < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -203,7 +204,7 @@ export default class Tado {
       }
       this._tadoBearerToken = { access_token, refresh_token, timestamp: this._now() };
     } catch (error) {
-      Logger.warn(`Error while refreshing token: ${error.message || JSON.stringify(error)}`);
+      Logger.warn(`Error while refreshing token: ${describeError(error)}`);
       const status = error.response?.statusCode;
       // Only a refusal from the token endpoint means the refresh token is dead.
       // Outages, timeouts and rate limits must keep it, otherwise a cloud blip
@@ -303,7 +304,7 @@ export default class Tado {
       await this._increaseCounter();
       me = response.body;
     } catch (error) {
-      throw new Error(`Could not verify identity after authentication: ${error.message || JSON.stringify(error)}`);
+      throw new Error(`Could not verify identity after authentication: ${describeError(error)}`, { cause: error });
     }
     const actual = (me?.email || me?.username || '').toLowerCase();
     const expected = this.username.toLowerCase();
@@ -327,7 +328,7 @@ export default class Tado {
           return;
         }
       } catch (error) {
-        Logger.warn(`Failed to load from external file (attempt ${attempt} of ${maxRetries}):`, error);
+        Logger.warn(`Failed to load from external file (attempt ${attempt} of ${maxRetries}): ${describeError(error)}`);
       }
       if (attempt < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 5000));
@@ -426,7 +427,7 @@ export default class Tado {
         name: this.name,
         method,
         url,
-        message: error.message,
+        message: describeError(error),
         statusCode: error.response?.statusCode,
         body: error.response?.body,
       });
@@ -611,7 +612,7 @@ export default class Tado {
     try {
       zone_state = await this.getZoneState(home_id, zone_id);
     } catch (error) {
-      Logger.warn(`Could not get zone state: ${error.message}`, this.name);
+      Logger.warn(`Could not get zone state: ${describeError(error)}`, this.name);
     }
 
     // Preserve existing termination settings if present

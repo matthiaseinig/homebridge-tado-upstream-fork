@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Tado from '../src/tado/tado-api.js';
+import Logger from '../src/helper/logger.js';
 
 const httpError = (statusCode, headers = {}) => Object.assign(new Error(`HTTP ${statusCode}`), { response: { statusCode, headers, body: {} } });
 
@@ -282,4 +283,32 @@ test('call classes: running time, presence, devices and weather are optional; wr
   assert.deepEqual(c('/api/v2/homes/1/zones/3/state'), { kind: 'none' });
   assert.deepEqual(c('/api/v2/homes/1/zones/3/overlay', 'PUT'), { kind: 'none' });
   await s.done();
+});
+
+test('token log lines never contain error text that could quote a token', async () => {
+  const lines = [];
+  Logger.init({ info: (m) => lines.push(String(m)), warn: (m) => lines.push(String(m)), error: (m) => lines.push(String(m)) }, true);
+  try {
+    const leaky = 'LEAKYSECRET0123456789abcdef';
+    const s = await setup((url) => {
+      if (url.endsWith('/oauth2/token')) throw Object.assign(new Error(`refresh_token ${leaky} rejected`), { response: { statusCode: 503, headers: {}, body: {} } });
+      return {};
+    });
+    await writeFile(s.tokenFile, JSON.stringify({ refresh_token: 'RT1' }));
+    await assert.rejects(() => s.tado.apiCall('/api/v2/me'), (e) => !e.message.includes(leaky));
+    assert.ok(lines.some((l) => l.includes('Error while refreshing token: HTTP 503')));
+    for (const l of lines) assert.doesNotMatch(l, /LEAKYSECRET/);
+    await s.done();
+
+    // a corrupt token file: JSON.parse quotes the file content in its message
+    const bad = await setup(() => ({}), {});
+    await writeFile(bad.tokenFile, `{"refresh_token": "${leaky}" oops`);
+    lines.length = 0;
+    await assert.rejects(() => bad.tado.apiCall('/api/v2/me').catch((e) => { throw e; }), () => true).catch(() => {});
+    assert.ok(lines.some((l) => l.includes('Failed to load from internal file') && l.includes('unexpected error')), JSON.stringify(lines));
+    for (const l of lines) assert.doesNotMatch(l, /LEAKYSECRET/);
+    await bad.done();
+  } finally {
+    Logger.init({ info() {}, warn() {}, error() {} }, false);
+  }
 });

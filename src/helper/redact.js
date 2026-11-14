@@ -18,13 +18,28 @@ const SCHEME_WORD = /^(?:Bearer|Basic|Digest)\b/i;
 const KEY_VALUE_LIKE = /^[A-Za-z_][\w.-]*=[^=]/;
 const TOKEN_TYPE_CONTEXT = /token_type["']?\s*[:=]\s*["']?$/i;
 // A bare "token:", "secret:" or "session:" is masked by default (fail closed).
-// Only text that clearly reads as prose is kept, so error messages stay readable.
-const PROSE_START = /^(?:Response code|getaddrinfo|HTTP|connect|timeout|Request failed|socket|ECONN|ETIMEDOUT|ENOTFOUND)/i;
-// an all-letters word followed by a lowercase word: "expired, please sign in again"
-const PROSE_SENTENCE = /^[A-Za-z]+[,.;:]?\s+[a-z]/;
+// A value is kept only when it is a known error phrase, matched on whole words,
+// whose remainder holds no credential-looking token, or one of a few fixed words.
+const PROSE_START = /^(?:Response code \d{3}\b|getaddrinfo E[A-Z]+\b|HTTP[/ ]?\d{1,3}\b|connect E[A-Z]+\b|timeout\b|Request failed\b|socket hang up\b|E(?:CONN[A-Z]+|TIMEDOUT|NOTFOUND)\b)/;
+const FIXED_WORD = /^(?:expired|invalid|missing|revoked|refused|unavailable)[.,;:!]*$/i;
+const CREDENTIAL_CHARS = /[A-Za-z0-9._~+/=-]{8,}/g;
+const PLAIN_WORD = /^[A-Z]?[a-z]{1,13}$/;
+const HOSTNAME = /^(?:[a-z][a-z0-9-]{0,30}\.)+[a-z]{2,10}$/;
+const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
+function hasCredentialLookingToken(rest) {
+  for (const raw of rest.match(CREDENTIAL_CHARS) ?? []) {
+    const token = raw.replace(/[.,;:=-]+$/, '');
+    if (token.length < 8) continue;
+    if (!(PLAIN_WORD.test(token) || HOSTNAME.test(token) || IPV4.test(token))) return true;
+  }
+  return false;
+}
 
 function looksLikeProse(value) {
-  return PROSE_START.test(value) || PROSE_SENTENCE.test(value);
+  if (FIXED_WORD.test(value.trim())) return true;
+  const m = PROSE_START.exec(value);
+  return m !== null && !hasCredentialLookingToken(value.slice(m[0].length));
 }
 
 const WS = /\s/;

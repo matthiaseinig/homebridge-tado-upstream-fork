@@ -191,7 +191,7 @@ test('human-readable error messages after "token:" are kept', () => {
   const b = 'API call failed. Could not get access token: getaddrinfo ENOTFOUND login.tado.com';
   assert.equal(redact(a), a);
   assert.equal(redact(b), b);
-  assert.equal(redact('session: expired, please sign in again'), 'session: expired, please sign in again');
+  assert.equal(redact('session: expired'), 'session: expired');
 });
 
 test('credential-looking values after "token:" and "session:" are still masked', () => {
@@ -219,7 +219,7 @@ test('short and oddly shaped bare tokens fail closed (8 to 15 characters, unusua
   assert.equal(redact('token: abc12345 and then more words'), 'token: [redacted]');
 });
 
-test('readable messages with known prefixes or a sentence shape stay readable', () => {
+test('readable messages with known whole-word prefixes or a fixed word stay readable', () => {
   for (const msg of [
     'Error while refreshing token: Response code 503 (Service Unavailable)',
     'Could not get access token: getaddrinfo ENOTFOUND login.tado.com',
@@ -230,8 +230,12 @@ test('readable messages with known prefixes or a sentence shape stay readable', 
     'refreshing token: socket hang up',
     'refreshing token: ECONNRESET',
     'refreshing token: ETIMEDOUT',
-    'session: expired, please sign in again',
-    'token: invalid and was rejected',
+    'session: expired',
+    'token: invalid.',
+    'token: Missing',
+    'session: revoked;',
+    'token: unavailable',
+    'token: refused',
   ]) assert.equal(redact(msg), msg);
 });
 
@@ -245,4 +249,36 @@ test('Bearer and Basic are masked at any length; only token_type=Bearer is exemp
 
 test('user_code stays unmasked', () => {
   assert.equal(redact('user_code=ABCD-1234'), 'user_code=ABCD-1234');
+});
+
+test('prose-prefix and sentence bypasses are masked (word-anchored prefixes, no sentence rule)', () => {
+  for (const value of [
+    'connectABCDEF1234567890',
+    'HTTPxyzABCDEF1234567890',
+    'HTTP503abcdefghijklmnop',
+    'timeoutABCDEF1234567890',
+    'ECONNabcdefghijklmnop1',
+    'socket hang upX abcdefghij1234567',
+    'abcdefghijklmnop expired',
+    'abcdefghijklmnopqrstuvwx and more',
+    'qwertyuiopasdfgh please retry later',
+    'expired, please sign in again',
+    'invalid and was rejected',
+    'Response code 503 abcdefgh12345678',
+    'HTTP 503 AbCdEfGh12345678',
+    'getaddrinfo ENOTFOUND Zk3Qm9Xv2LpR7sTw',
+    'connect ECONNREFUSED 1a2b3c4d5e6f7g8h9i',
+  ]) {
+    for (const key of ['token', 'session', 'secret']) {
+      const out = redact(`${key}: ${value}`);
+      assert.equal(out, `${key}: [redacted]`, `${key}: ${value}`);
+    }
+  }
+});
+
+test('a known prefix keeps the message only while the rest has no credential-looking token', () => {
+  assert.equal(redact('token: Response code 503 (Service Unavailable)'), 'token: Response code 503 (Service Unavailable)');
+  assert.equal(redact('token: getaddrinfo ENOTFOUND login.tado.com'), 'token: getaddrinfo ENOTFOUND login.tado.com');
+  assert.equal(redact('token: connect ECONNREFUSED 127.0.0.1:443'), 'token: connect ECONNREFUSED 127.0.0.1:443');
+  assert.equal(redact('token: HTTP 503 Service Unavailable.'), 'token: HTTP 503 Service Unavailable.');
 });

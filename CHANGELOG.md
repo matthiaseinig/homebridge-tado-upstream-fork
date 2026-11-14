@@ -1,5 +1,9 @@
 # Changelog
 
+## v9.1.7 - 2026-11-15
+- Redaction: a bare token:, secret: or session: value is kept only when it is a known error phrase matched on whole words (Response code NNN, getaddrinfo E..., HTTP NNN, connect E..., timeout, Request failed, socket hang up, ECONN*, ETIMEDOUT, ENOTFOUND) whose remainder has no credential-looking token, or one of expired, invalid, missing, revoked, refused, unavailable; everything else is masked (the sentence-shape rule is removed)
+- The plugin no longer interpolates error text into token, session and zone-state log lines; it logs the HTTP status, error code or a fixed phrase, so the redactor is a second line of defence
+
 ## v9.1.6 - 2026-11-15
 - Redaction fails closed again for a bare token:, secret: or session: value: it is masked to the end of the credential unless it clearly reads as prose (known error phrases such as Response code, getaddrinfo, HTTP, connect, timeout, Request failed, socket, ECONN*, ETIMEDOUT, ENOTFOUND, or an all-letters word followed by a lowercase word)
 - Bearer and Basic are masked at any length; the only exemption is the literal token_type=Bearer context
