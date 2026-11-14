@@ -1,0 +1,45 @@
+{
+  "note": "Sanitized, hand-reduced fixtures in the shape of GET /api/v2/homes/{id}/zoneStates. Ids and values are synthetic.",
+  "auto": {
+    "setting": { "type": "HEATING", "power": "ON", "temperature": { "celsius": 21.0, "fahrenheit": 69.8 } },
+    "overlayType": null,
+    "overlay": null,
+    "openWindow": null,
+    "openWindowDetected": false
+  },
+  "manual": {
+    "setting": { "type": "HEATING", "power": "ON", "temperature": { "celsius": 19.5, "fahrenheit": 67.1 } },
+    "overlayType": "MANUAL",
+    "overlay": { "type": "MANUAL", "setting": { "type": "HEATING", "power": "ON" }, "termination": { "type": "MANUAL", "typeSkillBasedApp": "MANUAL" } },
+    "openWindow": null,
+    "openWindowDetected": false
+  },
+  "boost": {
+    "setting": { "type": "HEATING", "power": "ON", "temperature": { "celsius": 25.0, "fahrenheit": 77.0 } },
+    "overlayType": "MANUAL",
+    "overlay": { "type": "MANUAL", "setting": { "type": "HEATING", "power": "ON" }, "termination": { "type": "TIMER", "typeSkillBasedApp": "TIMER", "durationInSeconds": 1800, "remainingTimeInSeconds": 1260 } },
+    "openWindow": null,
+    "openWindowDetected": false
+  },
+  "timerNotBoost": {
+    "setting": { "type": "HEATING", "power": "ON", "temperature": { "celsius": 20.0, "fahrenheit": 68.0 } },
+    "overlayType": "MANUAL",
+    "overlay": { "type": "MANUAL", "setting": { "type": "HEATING", "power": "ON" }, "termination": { "type": "TIMER", "typeSkillBasedApp": "TIMER", "durationInSeconds": 3600, "remainingTimeInSeconds": 3000 } },
+    "openWindow": null,
+    "openWindowDetected": false
+  },
+  "openWindow": {
+    "setting": { "type": "HEATING", "power": "OFF", "temperature": null },
+    "overlayType": null,
+    "overlay": null,
+    "openWindow": { "detectedTime": "2026-11-14T08:00:00Z", "durationInSeconds": 900, "expiry": "2026-11-14T08:15:00Z", "remainingTimeInSeconds": 600 },
+    "openWindowDetected": true
+  },
+  "off": {
+    "setting": { "type": "HEATING", "power": "OFF", "temperature": null },
+    "overlayType": "MANUAL",
+    "overlay": { "type": "MANUAL", "setting": { "type": "HEATING", "power": "OFF" }, "termination": { "type": "MANUAL" } },
+    "openWindow": null,
+    "openWindowDetected": false
+  }
+}

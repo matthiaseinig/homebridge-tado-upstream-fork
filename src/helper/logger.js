@@ -1,3 +1,5 @@
+import { redact } from './redact.js';
+
 var log = console;
 var debugMode = false;
 
@@ -11,6 +13,8 @@ export default {
   },
 
   formatMessage: function (message, device) {
+    message = redact(message);
+    device = redact(device);
     device = typeof device === 'object' ? JSON.stringify(device) : device;
     let formatted = '';
     if (device) {

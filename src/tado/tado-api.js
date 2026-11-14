@@ -2,6 +2,14 @@ import Logger from '../helper/logger.js';
 import got from 'got';
 import { join } from 'path';
 import { access, readFile, writeFile } from 'fs/promises';
+import { SourceHealth } from '../helper/source-health.js';
+import { WriteTracker } from '../helper/write-tracker.js';
+
+const AUTH_COOLDOWN_MS = 10 * 60 * 1000;
+
+function authRequiredError(message) {
+  return Object.assign(new Error(message), { code: 'TADO_AUTH_REQUIRED' });
+}
 
 const tado_url = "https://my.tado.com";
 const tado_auth_url = "https://login.tado.com/oauth2";
@@ -17,7 +25,14 @@ function _getSimpleHash(str) {
 }
 
 export default class Tado {
-  constructor(name, auth, storagePath, counterActivated) {
+  // deps (optional, for tests): { http, now, sleep }
+  constructor(name, auth, storagePath, counterActivated, deps = {}) {
+    this._http = deps.http ?? got;
+    this._now = deps.now ?? Date.now;
+    this._sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.health = new SourceHealth({ now: this._now });
+    this.writes = new WriteTracker({ now: this._now });
+    this._authCooldownUntil = 0;
     this.tadoApiUrl = auth.tadoApiUrl || tado_url;
     this.customTadoApiUrlActive = !!auth.tadoApiUrl;
     this.skipAuth = auth.skipAuth?.toString() === "true";
@@ -126,7 +141,7 @@ export default class Tado {
   async _getToken() {
     try {
       if (!this._tadoBearerToken) this._tadoBearerToken = { access_token: undefined, refresh_token: undefined, timestamp: 0 };
-      if ((Date.now() - this._tadoBearerToken.timestamp) < 9 * 60 * 1000) return this._tadoBearerToken.access_token;
+      if ((this._now() - this._tadoBearerToken.timestamp) < 9 * 60 * 1000) return this._tadoBearerToken.access_token;
 
       if (this._tadoExternalTokenFilePath) await this._retrieveTokenFromExternalFile();
       else await this._retrieveToken();
@@ -135,7 +150,7 @@ export default class Tado {
 
       return this._tadoBearerToken.access_token;
     } catch (error) {
-      throw new Error(`API call failed. Could not get access token: ${error.message || JSON.stringify(error)}`);
+      throw new Error(`API call failed. Could not get access token: ${error.message || JSON.stringify(error)}`, { cause: error });
     }
   }
 
@@ -170,8 +185,9 @@ export default class Tado {
 
   async _refreshToken(old_refresh_token) {
     let access_token, refresh_token;
+    let rejected = false;
     try {
-      const response = await got.post(`${tado_auth_url}/token`, {
+      const response = await this._http.post(`${tado_auth_url}/token`, {
         form: {
           client_id: this._tadoApiClientId,
           grant_type: "refresh_token",
@@ -181,19 +197,32 @@ export default class Tado {
       });
       await this._increaseCounter();
       ({ access_token, refresh_token } = response.body);
-      if (!access_token || !refresh_token) throw new Error("Empty access/refresh token.");
-      this._tadoBearerToken = { access_token, refresh_token, timestamp: Date.now() };
+      if (!access_token || !refresh_token) {
+        rejected = true;
+        throw new Error("Empty access/refresh token.");
+      }
+      this._tadoBearerToken = { access_token, refresh_token, timestamp: this._now() };
     } catch (error) {
       Logger.warn(`Error while refreshing token: ${error.message || JSON.stringify(error)}`);
-      this._tadoBearerToken = { access_token: undefined, refresh_token: undefined, timestamp: 0 };
-      return this._authenticateUser();
+      const status = error.response?.statusCode;
+      // Only a refusal from the token endpoint means the refresh token is dead.
+      // Outages, timeouts and rate limits must keep it, otherwise a cloud blip
+      // would force a new device login.
+      if (rejected || status === 400 || status === 401 || status === 403) {
+        this._tadoBearerToken = { access_token: undefined, refresh_token: undefined, timestamp: 0 };
+        return this._authenticateUser();
+      }
+      throw error;
     }
     await writeFile(this._tadoInternalTokenFilePath, JSON.stringify({ access_token, refresh_token }));
   }
 
   async _authenticateUser() {
+    if (this._now() < this._authCooldownUntil) {
+      throw authRequiredError('Tado authorization is required. Open the plugin settings in Homebridge to sign in again.');
+    }
     Logger.info('Requesting device authorization...');
-    const authResponse = await got.post(`${tado_auth_url}/device_authorize`, {
+    const authResponse = await this._http.post(`${tado_auth_url}/device_authorize`, {
       form: {
         client_id: this._tadoApiClientId,
         scope: "offline_access"
@@ -210,10 +239,10 @@ export default class Tado {
     if (this._tadoAuthenticationCallback) this._tadoAuthenticationCallback(verification_uri_complete);
     const maxRetries = 30;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      await this._sleep(5000);
       let tokenResponse;
       try {
-        tokenResponse = await got.post(`${tado_auth_url}/token`, {
+        tokenResponse = await this._http.post(`${tado_auth_url}/token`, {
           form: {
             client_id: this._tadoApiClientId,
             device_code: device_code,
@@ -228,7 +257,7 @@ export default class Tado {
       if (tokenResponse?.body) {
         const { access_token, refresh_token } = tokenResponse.body;
         if (access_token && refresh_token) {
-          this._tadoBearerToken = { access_token, refresh_token, timestamp: Date.now() };
+          this._tadoBearerToken = { access_token, refresh_token, timestamp: this._now() };
           try {
             await this._verifyAuthenticatedIdentity();
           } catch (error) {
@@ -239,13 +268,16 @@ export default class Tado {
             throw error;
           }
           await writeFile(this._tadoInternalTokenFilePath, JSON.stringify({ access_token, refresh_token }));
+          this._authCooldownUntil = 0;
           Logger.info("Authentication successful!");
           return;
         }
       }
       Logger.info("Waiting for confirmation...");
     }
-    throw new Error(`Failed to authenticate after ${maxRetries} attempts.`);
+    // Do not start another device login on every poll; wait for the user.
+    this._authCooldownUntil = this._now() + AUTH_COOLDOWN_MS;
+    throw authRequiredError(`Failed to authenticate after ${maxRetries} attempts.`);
   }
 
   // Tado's device-code "Submit" page silently confirms whichever account is
@@ -262,7 +294,7 @@ export default class Tado {
     const url = `${this.tadoApiUrl}/api/v2/me`;
     let me;
     try {
-      const response = await got(url, {
+      const response = await this._http(url, {
         method: 'GET',
         responseType: 'json',
         headers: { Authorization: `Bearer ${access_token}` },
@@ -291,7 +323,7 @@ export default class Tado {
         const data = await readFile(this._tadoExternalTokenFilePath, 'utf8');
         const json = JSON.parse(data);
         if (json.access_token) {
-          this._tadoBearerToken = { access_token: json.access_token, refresh_token: undefined, timestamp: Date.now() };
+          this._tadoBearerToken = { access_token: json.access_token, refresh_token: undefined, timestamp: this._now() };
           return;
         }
       } catch (error) {
@@ -304,8 +336,21 @@ export default class Tado {
     throw new Error(`Failed to load from external file after ${maxRetries} attempts.`);
   }
 
+  _recordHealth(error) {
+    const change = error ? this.health.recordFailure(error) : this.health.recordSuccess();
+    if (!change.changed) return;
+    if (change.to === 'ok') Logger.info('Tado cloud reachable again, data is current.', this.name);
+    else Logger.warn(`Tado data is ${change.to} (${change.reason}); keeping the last known values.`, this.name);
+  }
+
   async apiCall(path, method = 'GET', data = {}, params = {}, tado_url_dif) {
-    const access_token = this.skipAuth ? undefined : await this.getToken();
+    let access_token;
+    try {
+      access_token = this.skipAuth ? undefined : await this.getToken();
+    } catch (error) {
+      this._recordHealth(error);
+      throw error;
+    }
     const url = `${tado_url_dif || this.tadoApiUrl}${path}`;
 
     const options = {
@@ -340,8 +385,9 @@ export default class Tado {
     });
 
     try {
-      const response = await got(url, options);
+      const response = await this._http(url, options);
       await this._increaseCounter();
+      this._recordHealth();
       Logger.debug('API request success', {
         name: this.name,
         method,
@@ -351,6 +397,9 @@ export default class Tado {
       });
       return response.body;
     } catch (error) {
+      this._recordHealth(error);
+      // The server rejected our access token: drop it so the next call refreshes.
+      if (error.response?.statusCode === 401 && this._tadoBearerToken) this._tadoBearerToken.timestamp = 0;
       Logger.error('API request failed', {
         name: this.name,
         method,
@@ -365,6 +414,7 @@ export default class Tado {
 
   async fullAuthentication() {
     if (this.skipAuth) return "";
+    this._authCooldownUntil = 0;
     let instructions = "";
     let resolve;
     const oPromise = new Promise((res, _) => {
@@ -483,7 +533,9 @@ export default class Tado {
   }
 
   async clearZoneOverlay(home_id, zone_id) {
-    return this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/overlay`, 'DELETE');
+    const result = await this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/overlay`, 'DELETE');
+    this.writes.accepted(zone_id, { clear: true });
+    return result;
   }
 
   async setZoneOverlay(home_id, zone_id, power, temperature, termination, tempUnit) {
@@ -522,7 +574,11 @@ export default class Tado {
       config.termination.type = 'MANUAL';
     }
 
-    return this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/overlay`, 'PUT', config);
+    const result = await this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/overlay`, 'PUT', config);
+    this.writes.accepted(zone_id, config.setting.power === 'ON'
+      ? { power: 'ON', temperature: config.setting.temperature?.celsius }
+      : { power: 'OFF' });
+    return result;
   }
 
   async setACZoneOverlay(home_id, zone_id, power, mode, temperature, fanSpeed, swing, termination, tempUnit) {
@@ -613,7 +669,11 @@ export default class Tado {
       },
     };
 
-    return this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/overlay`, 'PUT', payload);
+    const result = await this.apiCall(`/api/v2/homes/${home_id}/zones/${zone_id}/overlay`, 'PUT', payload);
+    this.writes.accepted(zone_id, payload.setting.power === 'ON'
+      ? { power: 'ON', temperature: payload.setting.temperature?.celsius }
+      : { power: 'OFF' });
+    return result;
   }
 
   async setDeviceTemperatureOffset(device_id, temperatureOffset) {

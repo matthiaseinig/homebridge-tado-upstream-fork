@@ -3,6 +3,7 @@ import moment from 'moment';
 import { writeFile } from 'fs/promises';
 import { join } from "path";
 import { randomUUID } from 'crypto';
+import { buildStatusSnapshot } from './status-snapshot.js';
 
 const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 const helpers = {};
@@ -747,6 +748,23 @@ export default (api, accessories, config, tado, telegram) => {
     }
   }
 
+  async function persistStatus() {
+    try {
+      const snapshot = buildStatusSnapshot({
+        health: tado.health,
+        writes: tado.writes,
+        zoneStates: helpers[config.homeId].lastZoneStates,
+      });
+      await writeFile(
+        join(helpers[config.homeId].storagePath, `tado-status-${config.homeId}.json`),
+        JSON.stringify(snapshot, null, 2),
+        "utf-8"
+      );
+    } catch (error) {
+      Logger.error(`Error while updating the tado status file for home ${config.homeId}: ${error.message || JSON.stringify(error)}`);
+    }
+  }
+
   async function refreshHistoryServices() {
     if (!helpers[config.homeId].refreshHistoryHandlers.length) return;
     try {
@@ -772,6 +790,8 @@ export default (api, accessories, config, tado, telegram) => {
     } else {
       interval = helpers[config.homeId].statesIntervalTime;
     }
+    //back off while the cloud is failing (outage, rate limit, expired login)
+    interval = tado.health.nextDelayMs(interval);
     const addJitter = config.addJitter?.toString() === "true";
     if (!addJitter) return interval;
     //use 10 percent jitter
@@ -823,6 +843,7 @@ export default (api, accessories, config, tado, telegram) => {
     } catch (error) {
       Logger.error(`Failed to get states: ${error.message || JSON.stringify(error)}`);
     } finally {
+      void persistStatus();
       void refreshHistoryServices();
     }
   }
@@ -947,10 +968,21 @@ export default (api, accessories, config, tado, telegram) => {
       zoneStates = (await tado.getZoneStates(config.homeId))["zoneStates"] ?? {};
       void persistZoneStates(config.homeId, zoneStates);
     }
+    helpers[config.homeId].lastZoneStates = zoneStates;
 
     for (const zone of config.zones) {
       const zoneState = zoneStates[zone.id.toString()];
       Logger.debug(`Update state of zone ${zone.id} to:`, zoneState);
+
+      //keep the last known values instead of failing half way through the zones
+      if (!zoneState || !zoneState.setting) {
+        Logger.warn(`No state returned for zone ${zone.id}, keeping the last known values.`, config.homeName);
+        continue;
+      }
+
+      for (const t of tado.writes.observe(zone.id, zoneState)) {
+        Logger.info(`Write to zone ${zone.id} ${t.to}.`, config.homeName);
+      }
 
       let currentState, targetState, currentTemp, targetTemp, humidity, active, battery, tempEqual;
 

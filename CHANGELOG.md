@@ -1,5 +1,16 @@
 # Changelog
 
+## v9.1.0 - 2026-11-14
+- Cloud outage, rate limit or expired login now report stale data (with the last good timestamp) and keep the last known values instead of failing mid-update
+- A transient token refresh failure no longer drops the refresh token or starts a new device login; only a refusal from the token endpoint does
+- After a device login times out, no new login is started for 10 minutes
+- Polling backs off exponentially on failures and honours Retry-After on 429
+- A rejected access token (401) is dropped so the next call refreshes it
+- Writes are tracked as accepted, then confirmed (or unconfirmed after 2 minutes) by the next zone poll
+- Boost and open window state per zone, plus sourceStatus and sourceTimestamp, are written to tado-status-<home>.json in the Homebridge storage folder
+- Credentials are redacted from all log output
+- Add offline tests (npm test)
+
 ## v9.0.0 - 2026-05-03
 - Require Node.js 22
 - Update dependencies
