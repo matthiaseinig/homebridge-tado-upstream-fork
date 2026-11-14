@@ -1,5 +1,8 @@
 # Changelog
 
+## v9.1.4 - 2026-11-14
+- Redaction: a quoted value followed directly by more characters (session="a&b";) is masked to the end of the credential, never to a point inside the quoted value; fuzz test for quoted values containing & space = , and ;
+
 ## v9.1.3 - 2026-11-14
 - Redaction fails closed: an unterminated quoted secret (truncated log line) is masked to the end of the text
 - Unquoted credentials are masked up to the next ampersand, newline or key= (or the end), so values containing spaces no longer leak a tail (this over-masks on purpose)

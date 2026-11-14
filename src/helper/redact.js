@@ -119,6 +119,8 @@ function redactSecrets(text) {
         const glued = found.end < text.length && !/[\s&,})\]]/.test(text[found.end]);
         if (eq && glued) {
           start = i; // form/query style: characters follow the closing quote directly, mask them too
+          // credentialEnd(i) can stop inside the quoted value (at & or key=); never end before the quote
+          end = Math.max(found.end, credentialEnd(text, found.end));
           tail = end;
         } else {
           start = qStart;

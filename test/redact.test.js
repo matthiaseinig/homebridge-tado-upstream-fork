@@ -172,3 +172,10 @@ test('session, sid and cookie headers are masked', () => {
   assert.doesNotMatch(JSON.stringify(redact({ cookie: 'TAILXYZ0123', 'Set-Cookie': ['TAILXYZ0123'], sid: 'TAILXYZ0123', session: 'TAILXYZ0123' })), /TAILXYZ/);
   assert.equal(redact('Set-Cookie: session=abc\nnext'), 'Set-Cookie: [redacted]\nnext');
 });
+
+test('quoted values containing & or key= are masked to the closing quote and beyond', () => {
+  assert.doesNotMatch(redact('session="a&TAILXYZ";'), /TAILXYZ/);
+  assert.doesNotMatch(redact("password='a b=TAILXYZ';"), /TAILXYZ/);
+  assert.doesNotMatch(redact('sid="x y=TAILXYZ" ; z=1'), /TAILXYZ/);
+  assert.doesNotMatch(redact('Cookie: a=1; session="q&r=TAILXYZ"; b=2'), /TAILXYZ/);
+});
